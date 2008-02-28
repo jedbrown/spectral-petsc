@@ -1,4 +1,5 @@
 ALL : ex15 shell
+CFLAGS= -std=c99
 
 include ${PETSC_DIR}/bmake/common/base
 
@@ -10,3 +11,6 @@ ex15 : ex15.o chkopts
 
 shell : shell.o chkopts
 	${CLINKER} -o shell shell.o ${PETSC_LIB}
+
+cheb : cheb.o chebyshev.o chkopts
+	${CLINKER} -o cheb cheb.o chebyshev.o -lfftw3 ${PETSC_LIB}
