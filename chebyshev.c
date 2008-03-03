@@ -123,9 +123,9 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dim, unsigned
   ierr = VecGetArray(vx, &x); CHKERRQ(ierr);
   ierr = VecGetArray(vy, &y); CHKERRQ(ierr);
   const fftw_r2r_kind redft00 = FFTW_REDFT00, rodft00 = FFTW_RODFT00;
-  c->p_forward = fftw_plan_guru_r2r(1, &(c->tdim), c->rank-1, c->dim, x, c->work, &redft00, flag);
+  c->p_forward = fftw_plan_guru_r2r(1, &(c->tdim), c->rank-1, c->dim, x, c->work, &redft00, flag | FFTW_PRESERVE_INPUT);
   fftw_iodim tdim1 = c->tdim; tdim1.n -= 2; // we need a modified tdim to come back.
-  c->p_backward = fftw_plan_guru_r2r(1, &tdim1, c->rank-1, c->dim, c->work + tdim1.os, y + tdim1.is, &rodft00, flag);
+  c->p_backward = fftw_plan_guru_r2r(1, &tdim1, c->rank-1, c->dim, c->work + tdim1.os, y + tdim1.is, &rodft00, flag | FFTW_DESTROY_INPUT);
   ierr = VecRestoreArray(vx, &x); CHKERRQ(ierr);
   ierr = VecRestoreArray(vy, &y); CHKERRQ(ierr);
 
@@ -153,22 +153,9 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
 
   fftw_execute_r2r(c->p_forward, x, c->work);
 
+  double N = (double)n;
   ierr = PetscMemzero(ind, (c->rank - 1) * sizeof(int)); CHKERRQ(ierr);
   int offset = 0;
-  for (bool done = false; !done; ) {
-    for (int i = 1; i < n; i++) {
-      int ix = offset + i * c->tdim.is;
-      c->work[ix] *= (double)i;
-    }
-    perform_carry(c, ind, &offset, &done);
-  }
-
-  fftw_execute_r2r(c->p_backward, c->work + c->tdim.os, y + c->tdim.is);
-
-  double N = (double)n;
-  double pin = PI / N;
-  ierr = PetscMemzero(ind, (c->rank - 1) * sizeof(int)); CHKERRQ(ierr);
-  offset = 0;
   for (bool done = false; !done; ) {
     int ix0 = offset;
     int ixn = offset + n * c->tdim.is;
@@ -178,13 +165,27 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
     for (int i = 1; i < n; i++) {
       int ix = offset + i * c->tdim.is;
       double I = (double)i;
-      y[ix] /= 2 * n * sqrt(1.0 - PetscSqr(cos(I * pin)));
+      c->work[ix] *= I;
       y[ix0] += I * c->work[ix];
       y[ixn] += s * I * c->work[ix];
       s = -s;
     }
     y[ix0] = 0.5 * c->work[ixn] * N + y[ix0] / n;
     y[ixn] = y[ixn] / N + 0.5 * s * N * c->work[ixn];
+    perform_carry(c, ind, &offset, &done);
+  }
+
+  fftw_execute_r2r(c->p_backward, c->work + c->tdim.os, y + c->tdim.is);
+
+  double pin = PI / N;
+  ierr = PetscMemzero(ind, (c->rank - 1) * sizeof(int)); CHKERRQ(ierr);
+  offset = 0;
+  for (bool done = false; !done; ) {
+    for (int i = 1; i < n; i++) {
+      int ix = offset + i * c->tdim.is;
+      double I = (double)i;
+      y[ix] /= 2 * n * sqrt(1.0 - PetscSqr(cos(I * pin)));
+    }
     perform_carry(c, ind, &offset, &done);
   }
 

@@ -17,7 +17,7 @@ int main(int argc,char **args)
 {
   Vec            x,b,u;   /* approx solution, RHS, exact solution */
   Mat            A;
-  Vec            x2,b2,u2;   /* approx solution, RHS, exact solution */
+  Vec            x2,b2,u2,du2;   /* approx solution, RHS, exact solution */
   Mat            A2;
   KSP            ksp;      /* linear solver context */
   PC             pc;        /* preconditioner context */
@@ -45,7 +45,7 @@ int main(int argc,char **args)
   ierr = VecDuplicate(b,&x);CHKERRQ(ierr);
 
   ierr = MatCreateChebD1(PETSC_COMM_WORLD, x, b,
-                         FFTW_ESTIMATE | FFTW_PRESERVE_INPUT, &A); CHKERRQ(ierr);
+                         FFTW_ESTIMATE, &A); CHKERRQ(ierr);
 
   int dims[] = { m, n, p };
   // ierr = VecCreate(PETSC_COMM_WORLD, &u2);CHKERRQ(ierr);
@@ -53,8 +53,9 @@ int main(int argc,char **args)
   // ierr = VecSetFromOptions(u2);CHKERRQ(ierr);
   ierr = VecCreateSeq(PETSC_COMM_WORLD, m * n * p, &u2); CHKERRQ(ierr);
   ierr = VecDuplicate(u2, &b2);CHKERRQ(ierr);
-  ierr = VecDuplicate(b2, &x2);CHKERRQ(ierr);
-  ierr = MatCreateCheb(PETSC_COMM_WORLD, 3, d, dims, FFTW_ESTIMATE | FFTW_PRESERVE_INPUT,
+  ierr = VecDuplicate(u2, &du2);CHKERRQ(ierr);
+  ierr = VecDuplicate(u2, &x2);CHKERRQ(ierr);
+  ierr = MatCreateCheb(PETSC_COMM_WORLD, 3, d, dims, FFTW_ESTIMATE,
                        x2, b2, &A2); CHKERRQ(ierr);
 
   ierr = KSPCreate(PETSC_COMM_WORLD,&ksp);CHKERRQ(ierr);
@@ -70,7 +71,9 @@ int main(int argc,char **args)
   ierr = VecRestoreArray(u, &a); CHKERRQ(ierr);
 
   // 2-D solution function
+  double *e;
   ierr = VecGetArray(u2, &a); CHKERRQ(ierr);
+  ierr = VecGetArray(du2, &e); CHKERRQ(ierr);
   for (int i=0; i < m; i++) {
     double x = (m==1) ? 0 : cos (i * PI / (m-1));
     for (int j=0; j < n; j++) {
@@ -78,13 +81,18 @@ int main(int argc,char **args)
       for (int k=0; k < p; k++) {
         double z = (p==1) ? 0 : cos (k * PI / (p-1));
         a[(i*n + j) * p + k] = exp(x) + exp(y) + exp(z);
+        switch (d) {
+          case 0: e[(i*n + j) * p + k] = exp(x); break;
+          case 1: e[(i*n + j) * p + k] = exp(y); break;
+          case 2: e[(i*n + j) * p + k] = exp(z); break;
+        }
       }
     }
   }
   ierr = VecRestoreArray(u2, &a); CHKERRQ(ierr);
+  ierr = VecRestoreArray(du2, &e); CHKERRQ(ierr);
 
   ierr = MatMult(A, u, b); CHKERRQ(ierr);
-  ierr = MatMult(A2, u2, b2); CHKERRQ(ierr);
   // ierr = KSPSolve(ksp,b,x);CHKERRQ(ierr);
   ierr = VecCopy(b, x); CHKERRQ(ierr);
 
@@ -94,11 +102,20 @@ int main(int argc,char **args)
   //ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of error %A iterations %D\n",norm,its);CHKERRQ(ierr);
   ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of error %A\n",norm);CHKERRQ(ierr);
 
+  ierr = MatMult(A2, u2, b2); CHKERRQ(ierr);
+  ierr = VecCopy(b2, x2); CHKERRQ(ierr);
+
+  ierr = VecAXPY(x2,none,du2);CHKERRQ(ierr);
+  ierr = VecNorm(x2,NORM_INFINITY,&norm);CHKERRQ(ierr);
+  // ierr = KSPGetIterationNumber(ksp,&its);CHKERRQ(ierr);
+  //ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of error %A iterations %D\n",norm,its);CHKERRQ(ierr);
+  ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of error %A\n",norm);CHKERRQ(ierr);
+
   /* /\* ierr = VecView(x, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); *\/ */
-  printf("\n");
-  ierr = VecView(b, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
-  printf("\n");
-  ierr = VecView(b2, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
+  /* printf("\n"); */
+  /* ierr = VecView(b, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); */
+  /* printf("\n"); */
+  /* ierr = VecView(b2, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); */
 
   /*
      Free work space.  All PETSc objects should be destroyed when they
