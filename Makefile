@@ -1,5 +1,5 @@
 ALL : ex15 shell
-CFLAGS= -std=c99
+#CFLAGS= -std=c99
 
 include ${PETSC_DIR}/conf/base
 
@@ -17,3 +17,9 @@ cheb : cheb.o chebyshev.o chkopts
 
 poisson : poisson.o chebyshev.o chkopts
 	${CLINKER} -o poisson poisson.o chebyshev.o -lfftw3 ${PETSC_LIB}
+
+elliptic : elliptic.o chebyshev.o chkopts
+	${CLINKER} -o elliptic elliptic.o chebyshev.o -lfftw3 ${PETSC_LIB}
+
+istest : istest.o chkopts
+	${CLINKER} -o istest istest.o ${PETSC_LIB}

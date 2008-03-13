@@ -17,7 +17,7 @@ PetscErrorCode MatCreateChebD1(MPI_Comm comm, Vec vx, Vec vy, unsigned flag, Mat
   ierr = VecGetSize(vy, &n); CHKERRQ(ierr);
   if (c->n != n || n < 2) SETERRQ1(PETSC_ERR_USER, "n = %d but must be >= 2", n);
 
-  c->work = fftw_malloc(n * sizeof(double));
+  c->work = (double *)fftw_malloc(n * sizeof(double));
   ierr = VecGetArray(vx, &x); CHKERRQ(ierr);
   ierr = VecGetArray(vy, &y); CHKERRQ(ierr);
   c->p_forward = fftw_plan_r2r_1d(n, x, c->work, FFTW_REDFT00, flag);
@@ -40,7 +40,7 @@ PetscErrorCode ChebD1Mult(Mat A, Vec vx, Vec vy) {
   ChebD1Ctx *c;
 
   PetscFunctionBegin;
-  ierr = MatShellGetContext(A, (void *)&c); CHKERRQ(ierr);
+  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   ierr = VecGetArray(vx, &x); CHKERRQ(ierr);
   ierr = VecGetArray(vy, &y); CHKERRQ(ierr);
 
@@ -76,7 +76,7 @@ PetscErrorCode ChebD1Destroy (Mat A) {
   ChebD1Ctx *c;
 
   PetscFunctionBegin;
-  ierr = MatShellGetContext(A, (void *)&c); CHKERRQ(ierr);
+  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   fftw_destroy_plan(c->p_forward);
   fftw_destroy_plan(c->p_backward);
   fftw_free(c->work);
@@ -98,7 +98,7 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dim, unsigned
 
   ierr = PetscMalloc(sizeof(ChebCtx), &c); CHKERRQ(ierr);
   ierr = PetscMalloc((rank - 1) * sizeof(fftw_iodim), &(c->dim)); CHKERRQ(ierr);
-  c->work = fftw_malloc(n * sizeof(double));
+  c->work = (double *)fftw_malloc(n * sizeof(double));
   c->rank = rank;
   c->tr = tr;
 
@@ -144,7 +144,7 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
   ChebCtx *c;
 
   PetscFunctionBegin;
-  ierr = MatShellGetContext(A, (void *)&c); CHKERRQ(ierr);
+  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   ierr = VecGetArray(vx, &x); CHKERRQ(ierr);
   ierr = VecGetArray(vy, &y); CHKERRQ(ierr);
 
@@ -222,7 +222,7 @@ PetscErrorCode ChebDestroy (Mat A) {
   ChebCtx *c;
 
   PetscFunctionBegin;
-  ierr = MatShellGetContext(A, (void *)&c); CHKERRQ(ierr);
+  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   fftw_destroy_plan(c->p_forward);
   fftw_destroy_plan(c->p_backward);
   fftw_free(c->work);
