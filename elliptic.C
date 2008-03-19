@@ -15,19 +15,75 @@ static char help[] = "A nonlinear elliptic equation by Chebyshev differentiation
 #include <petscsnes.h>
 #include <stdbool.h>
 
-double dotDouble(int d, double x[], double y[]) {
-  double dot = 0.0;
-  for (int i=0; i<d; i++) {
+class BlockIt {
+  public:
+  BlockIt(int d, int *dim) : d(d) {
+    int s=1;
+    this->dim = new int[d]; stride = new int[d]; ind = new int[d];
+    for (int j=d-1; j>=0; j--) {
+      this->dim[j] = dim[j];
+      ind[j] = 0;
+      stride[j] = s;
+      s *= dim[j];
+    }
+    i = 0;
+    done = s == 0;
+  }
+  ~BlockIt() {
+    delete [] dim;
+    delete [] stride;
+    delete [] ind;
+  }
+  void next() {
+    int carry = 1;
+    i = 0;
+    for (int j = d-1; j >= 0; j--) {
+      ind[j] += carry;
+      carry = 0;
+      if (ind[j] == dim[j]) {
+        ind[j] = 0;
+        carry = 1;
+      }
+      i += ind[j] * stride[j];
+    }
+    done = (bool)carry;
+  }
+  bool done;
+  int i, *ind;
+  private:
+  int d, *dim, *stride;
+};
+
+PetscScalar dotScalar(PetscInt d, PetscScalar x[], PetscScalar y[]) {
+  PetscScalar dot = 0.0;
+  for (PetscInt i=0; i<d; i++) {
     dot += x[i] * y[i];
   }
   return dot;
 }
 
+int sumInt(int d, int dim[]) {
+  int z = 0;
+  for (int i=0; i<d; i++) z += dim[i];
+  return z;
+}
+
+int productInt(int d, int dim[]) {
+  int z = 1;
+  for (int i=0; i<d; i++) z *= dim[i];
+  return z;
+}
+
+void zeroInt(int d, int v[]) {
+  for (int i=0; i < d; i++) v[i] = 0;
+}
+
+
 typedef struct {
   int d, *dim, nw;
   Mat *D;
   Vec *w, *gradu;
-  Vec eta, deta;
+  Vec eta, deta, x;
   Vec dirichlet, dirichlet0;
   IS isG, isL;
   VecScatter scatterLG, scatterGL, scatterLD, scatterDL;
@@ -37,7 +93,6 @@ typedef struct {
   PetscInt exact, d, *dim;
   Mat A;
   Vec b;
-  Vec x;
   PetscReal gamma, exponent;
 } AppCtx;
 
@@ -48,14 +103,14 @@ typedef struct {
   PetscScalar value;
 } BdyCond;
 
-typedef PetscErrorCode(*BdyFunc)(int, double *, BdyCond *);
+typedef PetscErrorCode(*BdyFunc)(int, double *, double *, BdyCond *);
 
 PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag, BdyFunc bf, Vec *vG, Mat *A);
 PetscErrorCode MatMult_Elliptic(Mat, Vec, Vec);
 PetscErrorCode MatDestroy_Elliptic(Mat);
 PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c);
 PetscErrorCode LiftDirichlet_Elliptic(Mat A, Vec x, Vec b);
-PetscErrorCode DirichletBdy(int d, double *x, BdyCond *bc);
+PetscErrorCode DirichletBdy(int d, double *x, double *n, BdyCond *bc);
 PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0);
 PetscErrorCode FormFunction(SNES, Vec, Vec, void *);
 PetscErrorCode FormJacobian(SNES, Vec, Mat *, Mat *, MatStructure *, void *);
@@ -71,7 +126,7 @@ int main(int argc,char **args)
   SNES           snes;
   KSP            ksp;
   PC             pc;
-  PetscReal      norm, *y;
+  PetscReal      norm;
   PetscInt       m, n, p, d, its, exact;
   SNESConvergedReason reason;
   PetscErrorCode ierr;
@@ -112,14 +167,7 @@ int main(int argc,char **args)
     ierr = MatSetFromOptions(P); CHKERRQ(ierr);
     //ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 5, PETSC_NULL, &P); CHKERRQ(ierr);
   }
-  ierr = VecCreateSeq(PETSC_COMM_SELF, m*n*p*d, &ac->x); CHKERRQ(ierr);
-  ierr = VecSetBlockSize(ac->x, d); CHKERRQ(ierr);
-  ierr = VecGetArray(ac->x, &y); CHKERRQ(ierr);
-  for (int i=0; i<m; i++) { for (int j=0; j<n; j++) { for (int k=0; k<p; k++) {
-        const int I = ((i*n + j)*p + k)*d; y[I] = cos(i*PETSC_PI/(m-1)); if (d>1) y[I+1] = cos(j*PETSC_PI/(n-1)); if (d>2) y[I+2] = cos(k*PETSC_PI/(p-1));
-        //printf("x[%d][%d][%d] = %12.3f %12.3f\n", i, j, k, y[I], y[I+1]);
-      }}}
-  ierr = VecRestoreArray(ac->x, &y); CHKERRQ(ierr);
+
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
 
   ierr = VecDuplicate(u, &b);CHKERRQ(ierr);
@@ -134,7 +182,7 @@ int main(int argc,char **args)
   ierr = SNESSetApplicationContext(snes, ac); CHKERRQ(ierr);
   ierr = SNESGetKSP(snes, &ksp); CHKERRQ(ierr);
   ierr = KSPGetPC(ksp, &pc); CHKERRQ(ierr);
-  ierr = PCSetType(pc, PCNONE); CHKERRQ(ierr);
+  ierr = PCSetType(pc, PCLU); CHKERRQ(ierr);
   ierr = SNESSetFromOptions(snes); CHKERRQ(ierr);
   ac->A = A;
   // u = exact solution, u2 = A(u) u
@@ -197,9 +245,8 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
   ierr = PetscMalloc(sizeof(MatElliptic), &c); CHKERRQ(ierr);
   ierr = PetscMalloc2(d, PetscInt, &c->dim, d, Vec, &c->D); CHKERRQ(ierr);
   c->d = d;
-  for (int i=0; i<d; i++) c->dim[i] = dim[i];
-  PetscInt m = 1;
-  for (int i=0; i<d; i++) m *= dim[i];
+  for (int i=0; i<d; i++) { c->dim[i] = dim[i]; }
+  PetscInt m = productInt(d, dim);
   c->nw = 2+d;
 
   ierr = VecCreateSeq(comm, m, &c->eta); CHKERRQ(ierr);
@@ -212,6 +259,17 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
   for (int i=0; i<d; i++) {
     ierr = MatCreateCheb(comm, d, i, dim, flag, c->w[0], c->w[1], &c->D[i]); CHKERRQ(ierr);
   }
+
+  PetscScalar *x;
+  ierr = VecCreateSeq(comm, m*d, &c->x); CHKERRQ(ierr);
+  ierr = VecSetBlockSize(c->x, d); CHKERRQ(ierr);
+  ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);
+  for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) {
+    for (int j=0; j < d; j++) {
+      x[it.i*d+j] = cos(it.ind[j] * PETSC_PI / (dim[j] - 1));
+    }
+  }
+  ierr = VecRestoreArray(c->x, &x); CHKERRQ(ierr);
 
   ierr = SetupBC(comm, bf, vG, c); CHKERRQ(ierr);
 
@@ -303,32 +361,44 @@ PetscErrorCode MatDestroy_Elliptic (Mat A) {
 PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
   PetscErrorCode ierr;
   IS isG, isD;
-  PetscInt *ixL, *ixG, *ixD;
-  PetscScalar *uD;
+  PetscInt *ixL, *ixG, *ixD, *ind, m, l, g ,d;
+  PetscScalar *uD, *x, *n;
   Vec vL, vG, vD;
-  const PetscInt m=c->dim[0], n=c->dim[1];
+  //  const PetscInt m=c->dim[0], n=c->dim[1];
 
   PetscFunctionBegin;
-  ierr = PetscMalloc3(m*n, PetscInt, &ixL, m*n, PetscInt, &ixG, 2*(m+n), PetscInt, &ixD); CHKERRQ(ierr);
+  m = productInt(c->d, c->dim);
+  ierr = PetscMalloc6(m, PetscInt, &ixL, m, PetscInt, &ixG, 2*sumInt(c->d,c->dim), PetscInt, &ixD,
+                      c->d, PetscInt, &ind, c->d, PetscScalar, &x, c->d, PetscScalar, &n); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[1], &uD); CHKERRQ(ierr); // Just some workspace for boundary values
-  PetscInt l = 0, g = 0, d = 0;
-  for (int i=0; i < m; i++) {
-    for (int j=0; j < n; j++) {
-      if (i==0 || i==m-1 || j==0 || j==n-1) {
-        double x[2] = { cos(i*PI / (m-1)), cos(j*PI / (n-1)) };
-        BdyCond bc;
-        ierr = bf(2, x, &bc); CHKERRQ(ierr);
-        if (bc.type == BDY_DIRICHLET) {
+  ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);    // Coordinates in a block-size d vector
+  l = 0; g = 0; d = 0; // indices for local, global, and dirichlet
+  for (BlockIt it = BlockIt(c->d, c->dim); !it.done; it.next()) {
+    for (int j=0; j < c->d; j++) {
+      if (it.ind[j] == 0) {
+        n[j] = -1.0;
+      } else if (it.ind[j] == c->dim[j] - 1) {
+        n[j] = 1.0;
+      } else {
+        n[j] = 0.0;
+      }
+    }
+    PetscScalar nn = dotScalar(c->d, n, n);
+    if (nn > 1e-5) { // We are on the boundary
+      BdyCond bc;
+      for (int j=0; j < c->d; j++) n[j] /= sqrt(nn); // normalize n
+      ierr = bf(c->d, &x[c->d*it.i], n, &bc); CHKERRQ(ierr);
+      if (bc.type == BDY_DIRICHLET) {
           uD[d] = bc.value;
           ixL[l] = -1;
           ixD[d++] = l++;
         } else { SETERRQ(1, "Neumann not implemented."); }
-      } else {
-        ixL[l] = g;
-        ixG[g++] = l++;
-      }
+    } else { // Interior
+      ixL[l] = g;
+      ixG[g++] = l++;
     }
   }
+
   ierr = VecCreateSeq(comm, g, &vG); CHKERRQ(ierr);
   ierr = VecCreateSeq(comm, d, &vD); CHKERRQ(ierr);
   { // Fill dirichlet values into the special dirichlet vector.
@@ -350,11 +420,11 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
 #define TEST_SCATTER 0
 #if TEST_SCATTER
-  ierr = ISView(isD, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
-  ierr = VecView(vD, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
-  ierr = ISView(isG, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
-  ierr = VecView(vG, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
-  ierr = VecView(vL, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
+  printf("D -> L\n"); ierr = ISView(isD, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
+  //ierr = VecView(vD, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
+  printf("G -> L\n"); ierr = ISView(isG, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
+  //ierr = VecView(vG, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr); printf("\n");
+  //ierr = VecView(vL, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
   ierr = VecSet(vL, 0.0); CHKERRQ(ierr);
   ierr = VecSet(vG, 1.0); CHKERRQ(ierr);
   ierr = VecSet(vD, 2.0); CHKERRQ(ierr);
@@ -362,10 +432,15 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
   ierr = VecScatterEnd(c->scatterGL, vG, vL, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterDL, vD, vL, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterDL, vD, vL, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
-  ierr = VecView(vL, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
+  //ierr = VecView(vL, PETSC_VIEWER_STDOUT_SELF); CHKERRQ(ierr);
+  ierr = VecPrint2(vL, c->dim[0], c->dim[1], "local dof"); CHKERRQ(ierr); printf("\n");
+  ierr = VecSet(vG, 0.0); CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterLG, vL, vG, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterLG, vL, vG, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecPrint2(vG, c->dim[0]-2, c->dim[1]-2, "global dof"); CHKERRQ(ierr); printf("\n");
 #endif
 
-  ierr = PetscFree3(ixL, ixG, ixD); CHKERRQ(ierr);
+  ierr = PetscFree6(ixL, ixG, ixD, ind, x, n); CHKERRQ(ierr);
   c->isG = isG;
   ierr = ISDestroy(isD); CHKERRQ(ierr);
   *vGlob = vG;
@@ -377,7 +452,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
 #undef __FUNCT__
 #define __FUNCT__ "DirichletBdy"
-PetscErrorCode DirichletBdy(int dim, double *x, BdyCond *bc) {
+PetscErrorCode DirichletBdy(int dim, double *x, double *n, BdyCond *bc) {
   //PetscErrorCode ierr;
 
   PetscFunctionBegin;
@@ -473,7 +548,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArray(c->gradu[0], &u0x); CHKERRQ(ierr);
   ierr = VecGetArray(c->gradu[1], &u0y); CHKERRQ(ierr);
-  ierr = VecGetArray(ac->x, &x); CHKERRQ(ierr);
+  ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);
   ierr = ISGetLocalSize(c->isG, &n); CHKERRQ(ierr);
   ierr = ISGetIndices(c->isG, &ixG); CHKERRQ(ierr);
   ierr = ISGetIndices(c->isL, &ixL); CHKERRQ(ierr);
@@ -483,7 +558,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   d = c->d;
   for (int I=0; I<n; I++) { // loop over global degrees of freedom
     const int iL = ixG[I];  // The local index
-    const int N = ac->dim[1] * ac->dim[2];
+    const int N = productInt(c->d, c->dim) / c->dim[0];
     //const int i = iL / (c->dim[1] * c->dim[2]); // Only two dimensions work now.
     //const int j = (iL / c->dim[2]) % c->dim[1];
     // This is broken if we are not using a dirichlet boundary.
@@ -507,7 +582,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArray(c->gradu[0], &u0x); CHKERRQ(ierr);
   ierr = VecGetArray(c->gradu[1], &u0y); CHKERRQ(ierr);
-  ierr = VecRestoreArray(ac->x, &x); CHKERRQ(ierr);
+  ierr = VecRestoreArray(c->x, &x); CHKERRQ(ierr);
   ierr = ISRestoreIndices(c->isG, &ixG); CHKERRQ(ierr);
   ierr = ISRestoreIndices(c->isL, &ixL); CHKERRQ(ierr);
 

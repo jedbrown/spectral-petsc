@@ -1,5 +1,4 @@
 ALL : ex15 shell foo
-CFLAGS= -std=c99
 
 include ${PETSC_DIR}/conf/base
 
