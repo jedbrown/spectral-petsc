@@ -15,9 +15,17 @@ static char help[] = "A nonlinear elliptic equation by Chebyshev differentiation
 #include <petscsnes.h>
 #include <stdbool.h>
 
+double dotDouble(int d, double x[], double y[]) {
+  double dot = 0.0;
+  for (int i=0; i<d; i++) {
+    dot += x[i] * y[i];
+  }
+  return dot;
+}
+
 typedef struct {
   int d, *dim, nw;
-  Mat Dx, Dy;
+  Mat *D;
   Vec *w, *gradu;
   Vec eta, deta;
   Vec dirichlet, dirichlet0;
@@ -187,12 +195,12 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
 
   PetscFunctionBegin;
   ierr = PetscMalloc(sizeof(MatElliptic), &c); CHKERRQ(ierr);
-  ierr = PetscMalloc(d*sizeof(PetscInt), &c->dim); CHKERRQ(ierr);
+  ierr = PetscMalloc2(d, PetscInt, &c->dim, d, Vec, &c->D); CHKERRQ(ierr);
   c->d = d;
   for (int i=0; i<d; i++) c->dim[i] = dim[i];
   PetscInt m = 1;
   for (int i=0; i<d; i++) m *= dim[i];
-  c->nw = 5;
+  c->nw = 2+d;
 
   ierr = VecCreateSeq(comm, m, &c->eta); CHKERRQ(ierr);
   ierr = VecDuplicateVecs(c->eta, c->nw, &c->w); CHKERRQ(ierr);
@@ -201,8 +209,9 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
   ierr = VecSet(c->eta, 1.0); CHKERRQ(ierr);
   ierr = VecSet(c->deta, 0.0); CHKERRQ(ierr);
 
-  ierr = MatCreateCheb(comm, d, 0, dim, flag, c->w[0], c->w[1], &c->Dx); CHKERRQ(ierr);
-  ierr = MatCreateCheb(comm, d, 1, dim, flag, c->w[0], c->w[1], &c->Dy); CHKERRQ(ierr);
+  for (int i=0; i<d; i++) {
+    ierr = MatCreateCheb(comm, d, i, dim, flag, c->w[0], c->w[1], &c->D[i]); CHKERRQ(ierr);
+  }
 
   ierr = SetupBC(comm, bf, vG, c); CHKERRQ(ierr);
 
@@ -221,7 +230,7 @@ PetscErrorCode MatMult_Elliptic(Mat A, Vec U, Vec V) {
   PetscErrorCode ierr;
   MatElliptic *c;
   PetscInt n;
-  PetscScalar *u, *ux, *uy, *u0x, *u0y, *eta, *deta;
+  PetscScalar *u, **u_, **u0_, *eta, *deta;
 
   PetscFunctionBegin;
   ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
@@ -229,34 +238,35 @@ PetscErrorCode MatMult_Elliptic(Mat A, Vec U, Vec V) {
   ierr = VecScatterEnd(c->scatterGL, U, c->w[0], INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterDL, c->dirichlet0, c->w[0], INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterDL, c->dirichlet0, c->w[0], INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
-  ierr = MatMult(c->Dx, c->w[0], c->w[1]); CHKERRQ(ierr);
-  ierr = MatMult(c->Dy, c->w[0], c->w[2]); CHKERRQ(ierr);
+  for (int d=0; d < c->d; d++) {
+    ierr = MatMult(c->D[d], c->w[0], c->w[1+d]); CHKERRQ(ierr);
+  }
 
   ierr = VecGetSize(c->w[0], &n); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[0], &u); CHKERRQ(ierr);
-  ierr = VecGetArray(c->w[1], &ux); CHKERRQ(ierr);
-  ierr = VecGetArray(c->w[2], &uy); CHKERRQ(ierr);
-  ierr = VecGetArray(c->gradu[0], &u0x); CHKERRQ(ierr);
-  ierr = VecGetArray(c->gradu[1], &u0y); CHKERRQ(ierr);
+  ierr = VecGetArrays(&c->w[1], c->d, &u_); CHKERRQ(ierr);
+  ierr = VecGetArrays(c->gradu, c->d, &u0_); CHKERRQ(ierr);
   ierr = VecGetArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
-  for (int i=0; i<n; i++) {
-    ux[i] = eta[i] * ux[i] + deta[i] * u[i] * u0x[i];
-    uy[i] = eta[i] * uy[i] + deta[i] * u[i] * u0y[i];
+  for (int i=0; i < n; i++) {
+    for (int d=0; d < c->d; d++) {
+      u_[d][i] = eta[i] * u_[d][i] + deta[i] * u[i] * u0_[d][i];
+    }
   }
   ierr = VecRestoreArray(c->w[0], &u); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->w[1], &ux); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->w[2], &uy); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->gradu[0], &u0x); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->gradu[1], &u0y); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(&c->w[1], c->d, &u_); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(c->gradu, c->d, &u0_); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->deta, &deta); CHKERRQ(ierr);
 
-  ierr = MatMult(c->Dx, c->w[1], c->w[3]); CHKERRQ(ierr);
-  ierr = MatMult(c->Dy, c->w[2], c->w[4]); CHKERRQ(ierr);
-  ierr = VecAXPBY(c->w[4], -1.0, -1.0, c->w[3]); CHKERRQ(ierr);
-  ierr = VecScatterBegin(c->scatterLG, c->w[4], V, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
-  ierr = VecScatterEnd(c->scatterLG, c->w[4], V, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecZeroEntries(c->w[0]); CHKERRQ(ierr);
+  for (int d=0; d < c->d; d++) {
+    ierr = MatMult(c->D[d], c->w[1+d], c->w[1+c->d]); CHKERRQ(ierr);
+    ierr = VecAXPY(c->w[0], -1.0, c->w[1+c->d]); CHKERRQ(ierr);
+  }
+
+  ierr = VecScatterBegin(c->scatterLG, c->w[0], V, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterLG, c->w[0], V, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -268,8 +278,9 @@ PetscErrorCode MatDestroy_Elliptic (Mat A) {
 
   PetscFunctionBegin;
   ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
-  ierr = MatDestroy(c->Dx); CHKERRQ(ierr);
-  ierr = MatDestroy(c->Dy); CHKERRQ(ierr);
+  for (int d=0; d < c->d; d++) {
+    ierr = MatDestroy(c->D[d]); CHKERRQ(ierr);
+  }
   ierr = VecDestroyVecs(c->w, c->nw); CHKERRQ(ierr);
   ierr = VecDestroyVecs(c->gradu, c->d); CHKERRQ(ierr);
   ierr = VecDestroy(c->eta); CHKERRQ(ierr);
@@ -282,7 +293,7 @@ PetscErrorCode MatDestroy_Elliptic (Mat A) {
   ierr = VecScatterDestroy(c->scatterDL); CHKERRQ(ierr);
   ierr = VecScatterDestroy(c->scatterLG); CHKERRQ(ierr);
   ierr = VecScatterDestroy(c->scatterLD); CHKERRQ(ierr);
-  ierr = PetscFree(c->dim); CHKERRQ(ierr);
+  ierr = PetscFree2(c->dim, c->D); CHKERRQ(ierr);
   ierr = PetscFree(c);
   PetscFunctionReturn(0);
 }
@@ -396,7 +407,7 @@ PetscErrorCode FormFunction(SNES snes, Vec U, Vec rhs, void *void_ac) {
   AppCtx *ac = (AppCtx *)void_ac;
   MatElliptic *c;
   PetscInt n;
-  PetscScalar *u, *ux, *uy, *eta, *deta, *wx, *wy;
+  PetscScalar *u, **u_, *eta, *deta, **w_;
 
   PetscFunctionBegin;
   ierr = MatShellGetContext(ac->A, (void **)&c); CHKERRQ(ierr);
@@ -407,38 +418,38 @@ PetscErrorCode FormFunction(SNES snes, Vec U, Vec rhs, void *void_ac) {
 #if DEBUG
   ierr = VecPrint2(c->w[0], c->dim[0], c->dim[1], "in function"); CHKERRQ(ierr); printf("\n");
 #endif
-  ierr = MatMult(c->Dx, c->w[0], c->gradu[0]); CHKERRQ(ierr);
-  ierr = MatMult(c->Dy, c->w[0], c->gradu[1]); CHKERRQ(ierr);
+  for (int d=0; d < c->d; d++) {
+    ierr = MatMult(c->D[d], c->w[0], c->gradu[d]); CHKERRQ(ierr);
+  }
 
   ierr = VecGetSize(c->w[0], &n); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[0], &u); CHKERRQ(ierr);
-  ierr = VecGetArray(c->gradu[0], &ux); CHKERRQ(ierr);
-  ierr = VecGetArray(c->gradu[1], &uy); CHKERRQ(ierr);
-  ierr = VecGetArray(c->w[1], &wx); CHKERRQ(ierr);
-  ierr = VecGetArray(c->w[2], &wy); CHKERRQ(ierr);
+  ierr = VecGetArrays(c->gradu, c->d, &u_); CHKERRQ(ierr);
+  ierr = VecGetArrays(&c->w[1], c->d, &w_); CHKERRQ(ierr);
   ierr = VecGetArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
   for (int i=0; i<n; i++) {
     eta[i]  = 1.0 + ac->gamma * pow(u[i], ac->exponent);
     deta[i] = ac->exponent * ac->gamma * pow(u[i],ac->exponent-1.0);
-    wx[i]   = eta[i] * ux[i];
-    wy[i]   = eta[i] * uy[i];
+    for (int d=0; d < c->d; d++) {
+      w_[d][i]   = eta[i] * u_[d][i];
+    }
   }
   ierr = VecRestoreArray(c->w[0], &u); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->gradu[0], &ux); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->gradu[1], &uy); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->w[1], &wx); CHKERRQ(ierr);
-  ierr = VecRestoreArray(c->w[2], &wy); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(c->gradu, c->d, &u_); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(&c->w[1], c->d, &w_); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->deta, &deta); CHKERRQ(ierr);
 
-  ierr = MatMult(c->Dx, c->w[1], c->w[3]); CHKERRQ(ierr);
-  ierr = MatMult(c->Dy, c->w[2], c->w[4]); CHKERRQ(ierr);
-  ierr = VecAXPBY(c->w[4], -1.0, -1.0, c->w[3]); CHKERRQ(ierr);
+  ierr = VecZeroEntries(c->w[0]); CHKERRQ(ierr);
+  for (int d=0; d < c->d; d++) {
+    ierr = MatMult(c->D[d], c->w[1+d], c->w[1+c->d]); CHKERRQ(ierr);
+    ierr = VecAXPY(c->w[0], -1.0, c->w[1+c->d]); CHKERRQ(ierr);
+  }
 #if DEBUG
-  ierr = VecPrint2(c->w[4], c->dim[0], c->dim[1], "out function"); CHKERRQ(ierr); printf("\n");
+  ierr = VecPrint2(c->w[0], c->dim[0], c->dim[1], "out function"); CHKERRQ(ierr); printf("\n");
 #endif
-  ierr = VecScatterBegin(c->scatterLG, c->w[4], rhs, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterLG, c->w[0], rhs, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterLG, c->w[0], rhs, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecAXPY(rhs, -1.0, ac->b); CHKERRQ(ierr);
 
