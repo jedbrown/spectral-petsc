@@ -98,7 +98,11 @@ int main(int argc,char **args)
   {
     PetscInt m,n;
     ierr = MatGetSize(A, &m, &n); CHKERRQ(ierr);
-    ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 5, PETSC_NULL, &P); CHKERRQ(ierr);
+    ierr = MatCreate(PETSC_COMM_SELF, &P); CHKERRQ(ierr);
+    ierr = MatSetSizes(P, m, n, m, n); CHKERRQ(ierr);
+    ierr = MatSetType(P, MATUMFPACK); CHKERRQ(ierr);
+    ierr = MatSetFromOptions(P); CHKERRQ(ierr);
+    //ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 5, PETSC_NULL, &P); CHKERRQ(ierr);
   }
   ierr = VecCreateSeq(PETSC_COMM_SELF, m*n*p*d, &ac->x); CHKERRQ(ierr);
   ierr = VecSetBlockSize(ac->x, d); CHKERRQ(ierr);
