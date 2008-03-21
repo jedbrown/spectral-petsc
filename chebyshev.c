@@ -227,6 +227,7 @@ PetscErrorCode ChebDestroy (Mat A) {
   fftw_destroy_plan(c->p_backward);
   fftw_free(c->work);
   ierr = PetscFree(c->dim); CHKERRQ(ierr);
+  ierr = PetscFree(c); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 

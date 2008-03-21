@@ -90,6 +90,7 @@ typedef struct {
   Mat A;
   Vec b;
   PetscReal gamma, exponent;
+  int debug;
 } AppCtx;
 
 typedef enum { BDY_DIRICHLET, BDY_NEUMANN } BdyType;
@@ -130,19 +131,21 @@ int main(int argc,char **args)
   AppCtx *ac;
 
   PetscFunctionBegin;
+  //ierr = PetscMallocSetDumpLog(); CHKERRQ(ierr);
   ierr = PetscInitialize(&argc,&args,(char *)0,help); CHKERRQ(ierr);
   ierr = fftw_import_system_wisdom(); CHKERRQ(ierr);
   ierr = PetscMalloc(sizeof(AppCtx), &ac); CHKERRQ(ierr);
-  ierr = PetscMalloc(3*sizeof(PetscInt), &ac->dim); CHKERRQ(ierr);
+  ierr = PetscMalloc(10*sizeof(PetscInt), &ac->dim); CHKERRQ(ierr);
 
-  m = 4; n = 5; p = 1; exact = 0; ac->gamma = 0.0; ac->exponent = 2.0;
+  m = 4; n = 5; p = 1; ac->debug = 0; exact = 0; ac->gamma = 0.0; ac->exponent = 2.0;
   ierr = PetscOptionsBegin(PETSC_COMM_WORLD, "", "Elliptic problem options", ""); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-m", "x dim extent", "elliptic.c", m, &m, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-n", "y dim extent", "elliptic.c", n, &n, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-p", "z dim extent", "elliptic.c", p, &p, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-exact", "exact solution type", "elliptic.c", exact, &exact, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsReal("-gamma", "strength of nonlinearity", "elliptic.c", ac->gamma, &ac->gamma, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsReal("-exponent", "exponent of nonlinearity", "elliptic.c", ac->exponent, &ac->exponent, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-m", "x dim extent", "elliptic.C", m, &m, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-n", "y dim extent", "elliptic.C", n, &n, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-p", "z dim extent", "elliptic.C", p, &p, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-debug", "debugging level", "elliptic.C", ac->debug, &ac->debug, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-exact", "exact solution type", "elliptic.C", exact, &exact, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-gamma", "strength of nonlinearity", "elliptic.C", ac->gamma, &ac->gamma, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-exponent", "exponent of nonlinearity", "elliptic.C", ac->exponent, &ac->exponent, PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
 
   if (n == 1) d = 1;
@@ -157,11 +160,12 @@ int main(int argc,char **args)
   {
     PetscInt m,n;
     ierr = MatGetSize(A, &m, &n); CHKERRQ(ierr);
-    ierr = MatCreate(PETSC_COMM_SELF, &P); CHKERRQ(ierr);
-    ierr = MatSetSizes(P, m, n, m, n); CHKERRQ(ierr);
-    ierr = MatSetType(P, MATUMFPACK); CHKERRQ(ierr);
-    ierr = MatSetFromOptions(P); CHKERRQ(ierr);
-    //ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 5, PETSC_NULL, &P); CHKERRQ(ierr);
+    // ierr = MatCreate(PETSC_COMM_SELF, &P); CHKERRQ(ierr);
+    // ierr = MatSetSizes(P, m, n, m, n); CHKERRQ(ierr);
+    // ierr = MatSetType(P, MATUMFPACK); CHKERRQ(ierr);
+    // ierr = MatPreallocateInitialize(PETSC_COMM_SELF, m, n, &dnz, &onz); CHKERRQ(ierr);
+    // ierr = MatSetFromOptions(P); CHKERRQ(ierr);
+    ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 7, PETSC_NULL, &P); CHKERRQ(ierr);
   }
 
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
@@ -198,7 +202,7 @@ int main(int argc,char **args)
   ierr = VecPrint2(r, m-2, n-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
 #endif
   ierr = VecNorm(r, NORM_INFINITY, &norm);CHKERRQ(ierr);
-  ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of residual %A\n",norm);CHKERRQ(ierr);
+  ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of exact residual %A\n",norm);CHKERRQ(ierr);
 #endif
 
 #if SOLVE
@@ -223,10 +227,15 @@ int main(int argc,char **args)
 #endif
 
   ierr = SNESDestroy(snes);CHKERRQ(ierr);
+  ierr = MatDestroy(A);CHKERRQ(ierr);
+  ierr = MatDestroy(P);CHKERRQ(ierr);
   ierr = VecDestroy(u);CHKERRQ(ierr);  ierr = VecDestroy(u2);CHKERRQ(ierr);
   ierr = VecDestroy(b);CHKERRQ(ierr);  ierr = VecDestroy(b0);CHKERRQ(ierr);
-  ierr = VecDestroy(x);CHKERRQ(ierr);  ierr = MatDestroy(A);CHKERRQ(ierr);
+  //ierr = VecDestroy(x);CHKERRQ(ierr);
+  ierr = PetscFree(ac->dim);CHKERRQ(ierr);
+  ierr = PetscFree(ac);CHKERRQ(ierr);
 
+  //ierr = PetscMallocDumpLog(PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscFinalize();CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -365,7 +374,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
   PetscFunctionBegin;
   m = productInt(c->d, c->dim);
-  ierr = PetscMalloc5(m, PetscInt, &ixL, m, PetscInt, &ixG, 2*sumInt(c->d,c->dim), PetscInt, &ixD,
+  ierr = PetscMalloc5(m, PetscInt, &ixL, m, PetscInt, &ixG, m, PetscInt, &ixD,
                       c->d, PetscInt, &ind, c->d, PetscScalar, &n); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[1], &uD); CHKERRQ(ierr); // Just some workspace for boundary values
   ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);    // Coordinates in a block-size d vector
@@ -407,9 +416,12 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
   }
   ierr = VecRestoreArray(c->w[1], &uD); CHKERRQ(ierr);
 
+  ierr = PetscPrintf(comm, "DOF distribution: %8d local     %8d global     %8d dirichlet\n", l, g, d); CHKERRQ(ierr);
+
   ierr = ISCreateGeneral(comm, l, ixL, &c->isL); CHKERRQ(ierr); // We need this to build the preconditioner
   ierr = ISCreateGeneral(comm, d, ixD, &isD); CHKERRQ(ierr);
   ierr = ISCreateGeneral(comm, g, ixG, &isG); CHKERRQ(ierr);
+
   vL = c->w[0]; // A prototype local vector
   ierr = VecScatterCreate(vD, PETSC_NULL, vL, isD, &c->scatterDL); CHKERRQ(ierr);
   ierr = VecScatterCreate(vG, PETSC_NULL, vL, isG, &c->scatterGL); CHKERRQ(ierr);
@@ -583,6 +595,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   ierr = MatAssemblyBegin(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
 
+  //*flag = SAME_NONZERO_PATTERN;
   *flag = SAME_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
@@ -593,64 +606,62 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
   PetscErrorCode ierr;
   AppCtx *ac;
   MatElliptic *c;
-  PetscInt m, n, p;
+  PetscScalar *X, *w0, *w1, *v, *w, z;
+  PetscInt d;
 
   PetscFunctionBegin;
   ierr = SNESGetApplicationContext(snes, (void **)&ac); CHKERRQ(ierr);
   ierr = MatShellGetContext(ac->A, (void **)&c); CHKERRQ(ierr);
-  m = c->dim[0];
-  n = (c->d == 1) ? 1 : c->dim[1];
-  p = (c->d <= 2) ? 1 : c->dim[2];
-  double *w0, *w1;
+  d = c->d;
+
   ierr = VecGetArray(c->w[0], &w0); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[1], &w1); CHKERRQ(ierr);
-  for (int i=0; i < m; i++) {
-    double x = (m==1) ? 0 : cos (i * PI / (m-1));
-    for (int j=0; j < n; j++) {
-      double y = (n==1) ? 0 : cos (j * PI / (n-1));
-      for (int k=0; k < p; k++) {
-        // double z = (p==1) ? 0 : cos (k * PI / (p-1));
-        int ix = (i*n + j) * p + k;
-        switch (ac->exact) {
-          case 0:
-            w0[ix] = cos(0.5 * PI * x) * cos (0.5 * PI * y);
-            w1[ix] = 0.5 * PI * PI * w0[ix];
-            break;
-          case 1:
-            w0[ix] = (x-1) * (x+1) * (y-1) * (y+1);
-            w1[ix] = -2.0 * ((x-1) * (x+1) + (y-1) * (y+1));
-            break;
-          case 2:
-            w0[ix] = pow(x, 5) * pow(y,6);
-            w1[ix] = -(5*4*pow(x,3)*pow(y,6) + 6*5*pow(x,5)*pow(y,4));
-            break;
-          case 3:
-            w0[ix] = exp(2*x) * exp(3*y);
-            w1[ix] = -13 * w0[ix];
-            break;
-          case 4:
-            w0[ix] = sin(10*x) + sin(12*y);
-            w1[ix] = 100 * sin(10*x) + 144*sin(12*y);
-            break;
-          case 5:
-            w0[ix] = exp(-(x*x + y*y));
-            w1[ix] = (4 - 4*x*x - 4*y*y) * w0[ix];
-            break;
-          default:
-            SETERRQ(1, "Choose an exact solution.");
+  ierr = VecGetArray(c->x, &X); CHKERRQ(ierr);
+  for (BlockIt it = BlockIt(c->d, c->dim); !it.done; it.next()) {
+    const PetscInt i = it.i;
+    const PetscScalar *x = &X[it.i*d];
+    v = &w0[i], w = &w1[i];
+    switch (ac->exact) {
+      case 0:
+        v[0] = 1.0;
+        for (int j=0; j < d; j++) v[0] *= cos(0.5 * PI * x[j]);
+        w[0] = d * 0.25 * PetscSqr(PETSC_PI) * v[0];
+        break;
+      case 1:
+        v[0] = 1.0; w[0] = 0.0;
+        for (int j=0; j < d; j++) {
+          v[0] *= (1 - x[j]) * (1 + x[j]);
+          z = 1.0;
+          for (int k=0; k < d; k++) {
+            if (k != j) z *= 2.0 * (1 - x[k]) * (1 + x[k]);
+          }
+          w[0] += z;
         }
-        // uu[ix] = pow(x, 4) * pow(y, 3) + pow(y, 5);
-        // uu2[ix] = -(4 * 3 * pow(x, 2) * pow(y, 3) + 3 * 2 * pow(x,4) * y + 5 * 4 * pow(y, 3));
-        //uu[ix] =
-      }
+        break;
+      case 2:
+        v[0] = 1.0; w[0] = 0.0;
+        for (int j=0; j < d; j++) {
+          v[0] *= pow(x[j], 4+j);
+          z = 1.0;
+          for (int k=0; k < d; k++) {
+            if (k == j) z *= (4+k) * (3+k) * pow(x[k], 2+k);
+            else z *= pow(x[k], 4+k);
+          }
+          w[0] -= z;
+        }
+        break;
+      default:
+        SETERRQ(1, "Choose an exact solution.");
     }
   }
+
   ierr = VecRestoreArray(c->w[0], &w0); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->w[1], &w1); CHKERRQ(ierr);
-#if DEBUG
-  ierr = VecPrint2(c->w[0], m, n, "exact w0"); CHKERRQ(ierr); printf("\n");
-  ierr = VecPrint2(c->w[1], m, n, "exact w1"); CHKERRQ(ierr); printf("\n");
-#endif
+
+  if (ac->debug) {
+    ierr = VecPrint2(c->w[0], c->dim[0], c->dim[1], "exact w0"); CHKERRQ(ierr); printf("\n");
+    ierr = VecPrint2(c->w[1], c->dim[0], c->dim[1], "exact w1"); CHKERRQ(ierr); printf("\n");
+  }
   ierr = VecScatterBegin(c->scatterLG, c->w[0], u, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterLG, c->w[0], u, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterLG, c->w[1], u2, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
