@@ -170,10 +170,10 @@ int main(int argc,char **args)
 
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
 
-  ierr = VecDuplicate(u, &b);CHKERRQ(ierr);
-  ierr = VecDuplicate(u, &r);CHKERRQ(ierr);
-  ierr = VecDuplicate(u, &b0);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &u2);CHKERRQ(ierr);
+  ierr = VecDuplicate(u, &b);CHKERRQ(ierr);
+  ierr = VecDuplicate(u, &b0);CHKERRQ(ierr);
+  ierr = VecDuplicate(u, &r);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &x);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &ac->b);CHKERRQ(ierr);
   ierr = SNESCreate(PETSC_COMM_WORLD, &snes); CHKERRQ(ierr);
@@ -229,9 +229,10 @@ int main(int argc,char **args)
   ierr = SNESDestroy(snes);CHKERRQ(ierr);
   ierr = MatDestroy(A);CHKERRQ(ierr);
   ierr = MatDestroy(P);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr);  ierr = VecDestroy(u2);CHKERRQ(ierr);
-  ierr = VecDestroy(b);CHKERRQ(ierr);  ierr = VecDestroy(b0);CHKERRQ(ierr);
-  //ierr = VecDestroy(x);CHKERRQ(ierr);
+  ierr = VecDestroy(u);CHKERRQ(ierr); ierr = VecDestroy(u2);CHKERRQ(ierr);
+  ierr = VecDestroy(b);CHKERRQ(ierr); ierr = VecDestroy(b0);CHKERRQ(ierr);
+  ierr = VecDestroy(x);CHKERRQ(ierr); ierr = VecDestroy(r);CHKERRQ(ierr);
+  ierr = VecDestroy(ac->b);CHKERRQ(ierr);
   ierr = PetscFree(ac->dim);CHKERRQ(ierr);
   ierr = PetscFree(ac);CHKERRQ(ierr);
 
@@ -554,13 +555,11 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   // The nonlinear term has already been fixed up by FormFunction() so we just need to deal with the preconditioner here.
   ac = (AppCtx *)void_ac;
   ierr = MatShellGetContext(*A, (void **)&c); CHKERRQ(ierr);
-
   ierr = VecGetArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArrays(c->gradu, c->d, &u0_); CHKERRQ(ierr);
   ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);
   ierr = ISGetIndices(c->isL, &ixL); CHKERRQ(ierr);
-
   {
     PetscInt J[2 * c->d + 1];
     PetscScalar v[2* c->d + 1];
@@ -585,7 +584,6 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
       ierr = MatSetValues(*P, 1, J, k, J, v, INSERT_VALUES); CHKERRQ(ierr);
     }
   }
-
   ierr = VecRestoreArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(c->deta, &deta); CHKERRQ(ierr);
   ierr = VecRestoreArrays(c->gradu, c->d, &u0_); CHKERRQ(ierr);
@@ -594,8 +592,6 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
 
   ierr = MatAssemblyBegin(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-
-  //*flag = SAME_NONZERO_PATTERN;
   *flag = SAME_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
