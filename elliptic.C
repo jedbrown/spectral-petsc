@@ -106,7 +106,6 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
 PetscErrorCode MatMult_Elliptic(Mat, Vec, Vec);
 PetscErrorCode MatDestroy_Elliptic(Mat);
 PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c);
-PetscErrorCode LiftDirichlet_Elliptic(Mat A, Vec x, Vec b);
 PetscErrorCode DirichletBdy(int d, double *x, double *n, BdyCond *bc);
 PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0);
 PetscErrorCode FormFunction(SNES, Vec, Vec, void *);
@@ -485,20 +484,6 @@ PetscErrorCode DirichletBdy(int dim, double *x, double *n, BdyCond *bc) {
 }
 
 #undef __FUNCT__
-#define __FUNCT__ "LiftDirichlet_Elliptic"
-PetscErrorCode LiftDirichlet_Elliptic(Mat A, Vec x, Vec b) {
-  PetscErrorCode ierr;
-  MatElliptic *c;
-
-  PetscFunctionBegin;
-  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
-  ierr = VecCopy(c->dirichlet, c->dirichlet0); CHKERRQ(ierr);
-  ierr = MatMult(A, x, b); CHKERRQ(ierr);
-  ierr = VecZeroEntries(c->dirichlet0); CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
-#undef __FUNCT__
 #define __FUNCT__ "FormFunction"
 PetscErrorCode FormFunction(SNES snes, Vec U, Vec rhs, void *void_ac) {
   PetscErrorCode ierr;
@@ -693,7 +678,6 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
 
   ierr = VecSet(b, 0.0); CHKERRQ(ierr); // b is the inhomogenous dirichlet part, zero at interior nodes
   ierr = FormFunction(snes, b, b0, (void *)ac); CHKERRQ(ierr);
-  //ierr = LiftDirichlet_Elliptic(ac, FormFunction, b, b0); CHKERRQ(ierr); // Put it's contribution into b0
   ierr = VecCopy(u2, b); CHKERRQ(ierr); // Put exact right hand side in b
   ierr = VecAXPY(b, -1.0, b0); CHKERRQ(ierr); // Lift inhomogenous part to right hand side
 
