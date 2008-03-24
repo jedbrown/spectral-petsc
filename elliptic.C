@@ -123,40 +123,41 @@ int main(int argc,char **args)
   SNES           snes;
   KSP            ksp;
   PC             pc;
-  PetscReal      norm;
-  PetscInt       m, n, p, d, its, exact;
+  PetscReal      norm, unorm, u2norm, rnorm;
+  PetscInt       its;
   SNESConvergedReason reason;
   PetscErrorCode ierr;
-  // MatElliptic *c;
-  AppCtx *ac;
+  AppCtx         *ac;
+  PetscTruth     flag;
 
   PetscFunctionBegin;
   //ierr = PetscMallocSetDumpLog(); CHKERRQ(ierr);
   ierr = PetscInitialize(&argc,&args,(char *)0,help); CHKERRQ(ierr);
   ierr = fftw_import_system_wisdom(); CHKERRQ(ierr);
   ierr = PetscMalloc(sizeof(AppCtx), &ac); CHKERRQ(ierr);
-  ierr = PetscMalloc(10*sizeof(PetscInt), &ac->dim); CHKERRQ(ierr);
+  ac->d = 10; // Maximum number of dimensions
+  ierr = PetscMalloc(ac->d*sizeof(PetscInt), &ac->dim); CHKERRQ(ierr);
 
-  m = 4; n = 5; p = 1; ac->debug = 0; exact = 0; ac->gamma = 0.0; ac->exponent = 2.0;
+  ac->dim[0] = 8; ac->dim[1] = 6; // default dimension extent
+  ac->debug = 0; ac->exact = 0; ac->gamma = 0.0; ac->exponent = 2.0;
   ierr = PetscOptionsBegin(PETSC_COMM_WORLD, "", "Elliptic problem options", ""); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-m", "x dim extent", "elliptic.C", m, &m, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-n", "y dim extent", "elliptic.C", n, &n, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-p", "z dim extent", "elliptic.C", p, &p, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsIntArray("-dims", "list of dimension extent", "elliptic.C", ac->dim, &ac->d, &flag); CHKERRQ(ierr);
+  if (!flag) ac->d = 2;
   ierr = PetscOptionsInt("-debug", "debugging level", "elliptic.C", ac->debug, &ac->debug, PETSC_NULL); CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-exact", "exact solution type", "elliptic.C", exact, &exact, PETSC_NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-exact", "exact solution type", "elliptic.C", ac->exact, &ac->exact, PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscOptionsReal("-gamma", "strength of nonlinearity", "elliptic.C", ac->gamma, &ac->gamma, PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscOptionsReal("-exponent", "exponent of nonlinearity", "elliptic.C", ac->exponent, &ac->exponent, PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
 
-  if (n == 1) d = 1;
-  else if (p == 1) d = 2;
-  else d = 3;
-  ac->d = d;
-  ac->dim[0] = m; ac->dim[1] = n; ac->dim[2] = p;
-  ac->exact = exact;
+  ierr = PetscPrintf(PETSC_COMM_WORLD, "Elliptic problem");CHKERRQ(ierr);
+  ierr = PetscPrintf(PETSC_COMM_WORLD, "  dims = [", ac->d);CHKERRQ(ierr);
+  for (int i=0; i < ac->d; i++) {
+    if (i > 0) { ierr = PetscPrintf(PETSC_COMM_WORLD, ",");CHKERRQ(ierr); }
+    ierr = PetscPrintf(PETSC_COMM_WORLD, "%d", ac->dim[i]);CHKERRQ(ierr);
+  }
+  ierr = PetscPrintf(PETSC_COMM_WORLD, "]    gamma = %f    exponent = %8f\n", ac->gamma, ac->exponent);CHKERRQ(ierr);
 
-  //ierr = VecCreate
-  ierr = MatCreate_Elliptic(PETSC_COMM_WORLD, d, ac->dim, FFTW_ESTIMATE, DirichletBdy, &u, &A); CHKERRQ(ierr);
+  ierr = MatCreate_Elliptic(PETSC_COMM_WORLD, ac->d, ac->dim, FFTW_ESTIMATE, DirichletBdy, &u, &A); CHKERRQ(ierr);
   {
     PetscInt m,n;
     ierr = MatGetSize(A, &m, &n); CHKERRQ(ierr);
@@ -165,7 +166,7 @@ int main(int argc,char **args)
     // ierr = MatSetType(P, MATUMFPACK); CHKERRQ(ierr);
     // ierr = MatPreallocateInitialize(PETSC_COMM_SELF, m, n, &dnz, &onz); CHKERRQ(ierr);
     // ierr = MatSetFromOptions(P); CHKERRQ(ierr);
-    ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 7, PETSC_NULL, &P); CHKERRQ(ierr);
+    ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 1+2*ac->d, PETSC_NULL, &P); CHKERRQ(ierr);
   }
 
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
@@ -176,33 +177,42 @@ int main(int argc,char **args)
   ierr = VecDuplicate(u, &r);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &x);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &ac->b);CHKERRQ(ierr);
-  ierr = SNESCreate(PETSC_COMM_WORLD, &snes); CHKERRQ(ierr);
-  ierr = SNESSetJacobian(snes, A, P, FormJacobian, ac); CHKERRQ(ierr);
-  ierr = SNESSetFunction(snes, r, FormFunction, ac); CHKERRQ(ierr);
-  ierr = SNESSetApplicationContext(snes, ac); CHKERRQ(ierr);
-  ierr = SNESGetKSP(snes, &ksp); CHKERRQ(ierr);
-  ierr = KSPGetPC(ksp, &pc); CHKERRQ(ierr);
-  ierr = PCSetType(pc, PCLU); CHKERRQ(ierr);
-  ierr = SNESSetFromOptions(snes); CHKERRQ(ierr);
+  ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
+  ierr = SNESSetJacobian(snes, A, P, FormJacobian, ac);CHKERRQ(ierr);
+  ierr = SNESSetFunction(snes, r, FormFunction, ac);CHKERRQ(ierr);
+  ierr = SNESSetApplicationContext(snes, ac);CHKERRQ(ierr);
+  ierr = SNESGetKSP(snes, &ksp);CHKERRQ(ierr);
+  ierr = KSPSetType(ksp, KSPFGMRES);CHKERRQ(ierr);
+  ierr = KSPGetPC(ksp, &pc);CHKERRQ(ierr);
+  ierr = PCSetType(pc, PCILU);CHKERRQ(ierr);
+  ierr = PCFactorSetLevels(pc, 2);CHKERRQ(ierr);
+  ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
   ac->A = A;
   // u = exact solution, u2 = A(u) u
   // b = RHS with dirichlet, b0 = just dirichlet
   ierr = CreateExactSolution(snes,u,u2,b,b0);CHKERRQ(ierr);
+  ierr = VecNorm(u, NORM_INFINITY, &unorm);CHKERRQ(ierr);
+  ierr = VecNorm(u2, NORM_INFINITY, &u2norm);CHKERRQ(ierr);
   ierr = VecCopy(u2,ac->b);CHKERRQ(ierr);
 
 #if CHECK_EXACT
   //ierr = VecSet(r, 0.0); CHKERRQ(ierr);
   //ierr = FormFunction(snes, r, x, ac); CHKERRQ(ierr);
   ierr = FormFunction(snes, u, r, ac); CHKERRQ(ierr);
-#if DEBUG
-  ierr = VecPrint2(u, m-2, n-2, "exact u"); CHKERRQ(ierr); printf("\n");
-  ierr = VecPrint2(u2, m-2, n-2, "exact u2"); CHKERRQ(ierr); printf("\n");
-  ierr = VecPrint2(b, m-2, n-2, "discrete b"); CHKERRQ(ierr); printf("\n");
-  ierr = VecPrint2(b0, m-2, n-2, "discrete b0"); CHKERRQ(ierr); printf("\n");
-  ierr = VecPrint2(r, m-2, n-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
-#endif
+  if (ac->debug >= 2) {
+    PetscInt m = ac->dim[0], n = ac->dim[1];
+    ierr = VecPrint2(u, m-2, n-2, "exact u"); CHKERRQ(ierr); printf("\n");
+    ierr = VecPrint2(u2, m-2, n-2, "exact u2"); CHKERRQ(ierr); printf("\n");
+    ierr = VecPrint2(b, m-2, n-2, "discrete b"); CHKERRQ(ierr); printf("\n");
+    ierr = VecPrint2(b0, m-2, n-2, "discrete b0"); CHKERRQ(ierr); printf("\n");
+    ierr = VecPrint2(r, m-2, n-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
+  }
   ierr = VecNorm(r, NORM_INFINITY, &norm);CHKERRQ(ierr);
-  ierr = PetscPrintf(PETSC_COMM_WORLD,"Norm of exact residual %A\n",norm);CHKERRQ(ierr);
+  //ierr = VecPrint2(r, ac->dim[0]-2, ac->dim[1]-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
+  ierr = VecPointwiseDivide(r, r, u2);CHKERRQ(ierr);
+  ierr = VecNorm(r, NORM_INFINITY, &rnorm);CHKERRQ(ierr);
+  //ierr = VecPrint2(r, ac->dim[0]-2, ac->dim[1]-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
+  ierr = PetscPrintf(PETSC_COMM_WORLD,"%-25s: abs = %8e   rel = %8e\n", "Norm of exact residual",norm,rnorm);CHKERRQ(ierr);
 #endif
 
 #if SOLVE
@@ -214,12 +224,14 @@ int main(int argc,char **args)
 
   ierr = VecAXPY(x, -1.0, u); CHKERRQ(ierr);
   ierr = VecNorm(x, NORM_INFINITY, &norm); CHKERRQ(ierr);
+  ierr = VecPointwiseDivide(x, x, u);CHKERRQ(ierr);
+  ierr = VecNorm(x, NORM_INFINITY, &rnorm);CHKERRQ(ierr);
   ierr = SNESGetIterationNumber(snes, &its);CHKERRQ(ierr);
   ierr = SNESGetConvergedReason(snes, &reason);CHKERRQ(ierr);
   ierr = PetscObjectGetComm((PetscObject) snes, &comm);CHKERRQ(ierr);
-  ierr = PetscPrintf(comm, "Number of nonlinear iterations = %D\n", its);CHKERRQ(ierr);
+  ierr = PetscPrintf(comm, "Number of nonlinear iterations = %d\n", its);CHKERRQ(ierr);
   ierr = PetscPrintf(comm, "Reason for solver termination: %s\n", SNESConvergedReasons[reason]);CHKERRQ(ierr);
-  ierr = PetscPrintf(comm, "Norm of error = %A\n", norm);CHKERRQ(ierr);
+  ierr = PetscPrintf(comm, "%-25s: abs = %8e   rel = %8e\n", "Norm of error", norm, rnorm);CHKERRQ(ierr);
   /* ierr = SNESGetKSP(snes, ksp); CHKERRQ(ierr); */
   /* ierr = KSPGetIterationNumber(ksp, &its); CHKERRQ(ierr); */
   /* ierr = PetscPrintf(PETSC_COMM_WORLD, "Norm of error %A iterations %D\n", norm, its); CHKERRQ(ierr); */
@@ -602,13 +614,19 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
   PetscErrorCode ierr;
   AppCtx *ac;
   MatElliptic *c;
-  PetscScalar *X, *w0, *w1, *v, *w, z;
-  PetscInt d;
+  PetscScalar *X, *w0, *w1, *v, *w, z, s;
 
   PetscFunctionBegin;
   ierr = SNESGetApplicationContext(snes, (void **)&ac); CHKERRQ(ierr);
   ierr = MatShellGetContext(ac->A, (void **)&c); CHKERRQ(ierr);
-  d = c->d;
+  const PetscInt d = c->d;
+  const double gamma = ac->gamma, exponent = ac->exponent;
+  s = 0.5;
+  if (ac->exact == 0 || ac->exact == 3) {
+    PetscReal cos_scale;
+    ierr = PetscOptionsGetReal(PETSC_NULL, "-cos_scale", &cos_scale, PETSC_NULL);CHKERRQ(ierr);
+    s *= cos_scale;
+  }
 
   ierr = VecGetArray(c->w[0], &w0); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[1], &w1); CHKERRQ(ierr);
@@ -618,12 +636,20 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
     const PetscScalar *x = &X[it.i*d];
     v = &w0[i], w = &w1[i];
     switch (ac->exact) {
-      case 0:
-        v[0] = 1.0;
-        for (int j=0; j < d; j++) v[0] *= cos(0.5 * PI * x[j]);
-        w[0] = d * 0.25 * PetscSqr(PETSC_PI) * v[0];
-        break;
-      case 1:
+      case 0: { // separable cosine, handles nonlinearity, zero on boundary iff cos_scale in 1,2,...
+        v[0] = 1.0; w[0] = 0.0;
+        for (int j=0; j < d; j++) v[0] *= cos(s*PI*x[j]);
+        const double eta  = 1.0 + gamma * pow(v[0], exponent);
+        const double deta = (abs(exponent) < 1e-10) ? 0.0 : gamma * exponent * pow(v[0], exponent-1.0);
+        for (int j=0; j < d; j++) {
+          double dv = 1.0;
+          for (int k=0; k < d; k++) dv *= (k == j) ? -s*PI*sin(s*PI*x[k]) : cos(s*PI*x[k]);
+          const double d2v = -PetscSqr(s*PI)*v[0];
+          w[0] += deta * PetscSqr(dv) + eta * d2v;
+        }
+        w[0] = -w[0];
+      } break;
+      case 1: // separable quadratics, zero on boundary
         v[0] = 1.0; w[0] = 0.0;
         for (int j=0; j < d; j++) {
           v[0] *= (1 - x[j]) * (1 + x[j]);
@@ -634,7 +660,7 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
           w[0] += z;
         }
         break;
-      case 2:
+      case 2: // separable polynomials, nonzero on boundary
         v[0] = 1.0; w[0] = 0.0;
         for (int j=0; j < d; j++) {
           v[0] *= pow(x[j], 4+j);
