@@ -114,7 +114,7 @@ int main(int argc,char **argv)
 
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
   user.testint = 0;
-  ierr = SNESLineSearchSet(snes,FormLineSearch,&user);CHKERRQ(ierr);
+  ierr = SNESLineSearchSet(snes,FormLineSearch,(void **)&user);CHKERRQ(ierr);
 
   /*
      Save all the linear residuals for all the Newton steps; this enables us
