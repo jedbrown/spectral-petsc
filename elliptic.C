@@ -189,7 +189,6 @@ int main(int argc,char **args)
   ierr = CreateExactSolution(snes,u,u2);CHKERRQ(ierr);
   ierr = VecNorm(u, NORM_INFINITY, &unorm);CHKERRQ(ierr);
   ierr = VecNorm(u2, NORM_INFINITY, &u2norm);CHKERRQ(ierr);
-  ierr = VecCopy(u2,ac->b);CHKERRQ(ierr);
 
 #if CHECK_EXACT
   //ierr = VecSet(r, 0.0); CHKERRQ(ierr);
@@ -672,6 +671,7 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2) {
   ierr = VecScatterEnd(c->scatterLG, c->w[1], u2, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterLD, c->w[0], c->dirichlet, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterLD, c->w[0], c->dirichlet, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
+  ierr = VecCopy(u2, ac->b);CHKERRQ(ierr);
 
   PetscFunctionReturn(0);
 }
