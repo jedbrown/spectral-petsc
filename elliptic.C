@@ -625,7 +625,7 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
         v[0] = 1.0; w[0] = 0.0;
         for (int j=0; j < d; j++) v[0] *= cos(s*PI*x[j]);
         const double eta  = 1.0 + gamma * pow(v[0], exponent);
-        const double deta = (abs(exponent) < 1e-10) ? 0.0 : gamma * exponent * pow(v[0], exponent-1.0);
+        const double deta = (PetscAbs(exponent) < 1e-10) ? 0.0 : gamma * exponent * pow(v[0], exponent-1.0);
         for (int j=0; j < d; j++) {
           double dv = 1.0;
           for (int k=0; k < d; k++) dv *= (k == j) ? -s*PI*sin(s*PI*x[k]) : cos(s*PI*x[k]);
