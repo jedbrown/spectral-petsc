@@ -23,5 +23,8 @@ poisson : poisson.o chebyshev.o chkopts
 elliptic : elliptic.o chebyshev.o chkopts
 	${CLINKER} -o elliptic elliptic.o chebyshev.o ${PROF} -lfftw3 ${PETSC_LIB}
 
+stokes : stokes.o chebyshev.o chkopts
+	${CLINKER} -o stokes stokes.o chebyshev.o ${PROF} -lfftw3 ${PETSC_LIB}
+
 istest : istest.o chkopts
 	${CLINKER} -o istest istest.o ${PETSC_LIB}
