@@ -107,7 +107,7 @@ PetscErrorCode MatMult_Elliptic(Mat, Vec, Vec);
 PetscErrorCode MatDestroy_Elliptic(Mat);
 PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c);
 PetscErrorCode DirichletBdy(int d, double *x, double *n, BdyCond *bc);
-PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0);
+PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2);
 PetscErrorCode FormFunction(SNES, Vec, Vec, void *);
 PetscErrorCode FormJacobian(SNES, Vec, Mat *, Mat *, MatStructure *, void *);
 PetscErrorCode VecPrint2(Vec, PetscInt, PetscInt, const char *);
@@ -117,7 +117,7 @@ PetscErrorCode VecPrint2(Vec, PetscInt, PetscInt, const char *);
 int main(int argc,char **args)
 {
   MPI_Comm       comm;
-  Vec            x, r, b, b0, u, u2;
+  Vec            x, r, u, u2;
   Mat            A, P;
   SNES           snes;
   KSP            ksp;
@@ -171,8 +171,6 @@ int main(int argc,char **args)
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
 
   ierr = VecDuplicate(u, &u2);CHKERRQ(ierr);
-  ierr = VecDuplicate(u, &b);CHKERRQ(ierr);
-  ierr = VecDuplicate(u, &b0);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &r);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &x);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &ac->b);CHKERRQ(ierr);
@@ -188,8 +186,7 @@ int main(int argc,char **args)
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
   ac->A = A;
   // u = exact solution, u2 = A(u) u
-  // b = RHS with dirichlet, b0 = just dirichlet
-  ierr = CreateExactSolution(snes,u,u2,b,b0);CHKERRQ(ierr);
+  ierr = CreateExactSolution(snes,u,u2);CHKERRQ(ierr);
   ierr = VecNorm(u, NORM_INFINITY, &unorm);CHKERRQ(ierr);
   ierr = VecNorm(u2, NORM_INFINITY, &u2norm);CHKERRQ(ierr);
   ierr = VecCopy(u2,ac->b);CHKERRQ(ierr);
@@ -202,8 +199,6 @@ int main(int argc,char **args)
     PetscInt m = ac->dim[0], n = ac->dim[1];
     ierr = VecPrint2(u, m-2, n-2, "exact u"); CHKERRQ(ierr); printf("\n");
     ierr = VecPrint2(u2, m-2, n-2, "exact u2"); CHKERRQ(ierr); printf("\n");
-    ierr = VecPrint2(b, m-2, n-2, "discrete b"); CHKERRQ(ierr); printf("\n");
-    ierr = VecPrint2(b0, m-2, n-2, "discrete b0"); CHKERRQ(ierr); printf("\n");
     ierr = VecPrint2(r, m-2, n-2, "discrete residual"); CHKERRQ(ierr); printf("\n");
   }
   ierr = VecNorm(r, NORM_INFINITY, &norm);CHKERRQ(ierr);
@@ -241,7 +236,6 @@ int main(int argc,char **args)
   ierr = MatDestroy(A);CHKERRQ(ierr);
   ierr = MatDestroy(P);CHKERRQ(ierr);
   ierr = VecDestroy(u);CHKERRQ(ierr); ierr = VecDestroy(u2);CHKERRQ(ierr);
-  ierr = VecDestroy(b);CHKERRQ(ierr); ierr = VecDestroy(b0);CHKERRQ(ierr);
   ierr = VecDestroy(x);CHKERRQ(ierr); ierr = VecDestroy(r);CHKERRQ(ierr);
   ierr = VecDestroy(ac->b);CHKERRQ(ierr);
   ierr = PetscFree(ac->dim);CHKERRQ(ierr);
@@ -549,7 +543,10 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   PetscInt *ixL;
 
   PetscFunctionBegin;
-  // The nonlinear term has already been fixed up by FormFunction() so we just need to deal with the preconditioner here.
+  // The nonlinear term has already been fixed up by FormFunction() so we just
+  // need to deal with the preconditioner here.  In principle, this is the
+  // Jacobian about `w', but we will rely on the viscosity already being
+  // properly set since FormFunction() has already been called with the same `w'.
   ac = (AppCtx *)void_ac;
   ierr = MatShellGetContext(*A, (void **)&c); CHKERRQ(ierr);
   ierr = VecGetArray(c->eta, &eta); CHKERRQ(ierr);
@@ -595,7 +592,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
 
 #undef __FUNCT__
 #define __FUNCT__ "CreateExactSolution"
-PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
+PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2) {
   PetscErrorCode ierr;
   AppCtx *ac;
   MatElliptic *c;
@@ -675,11 +672,6 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2, Vec b, Vec b0) {
   ierr = VecScatterEnd(c->scatterLG, c->w[1], u2, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterLD, c->w[0], c->dirichlet, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterLD, c->w[0], c->dirichlet, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(ierr);
-
-  ierr = VecSet(b, 0.0); CHKERRQ(ierr); // b is the inhomogenous dirichlet part, zero at interior nodes
-  ierr = FormFunction(snes, b, b0, (void *)ac); CHKERRQ(ierr);
-  ierr = VecCopy(u2, b); CHKERRQ(ierr); // Put exact right hand side in b
-  ierr = VecAXPY(b, -1.0, b0); CHKERRQ(ierr); // Lift inhomogenous part to right hand side
 
   PetscFunctionReturn(0);
 }
