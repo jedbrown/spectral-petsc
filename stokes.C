@@ -95,7 +95,7 @@ int main(int argc,char **args)
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
   ierr = SNESGetKSP(snes, &ksp);CHKERRQ(ierr);
   //ierr = KSPSetType(ksp, KSPFGMRES);CHKERRQ(ierr);
-  //ierr = StokesRemoveConstantPressure(ksp, ctx, &nv, &ns);CHKERRQ(ierr);
+  ierr = StokesRemoveConstantPressure(ksp, ctx, &nv, &ns);CHKERRQ(ierr);
   ierr = KSPGetPC(ksp, &pc);CHKERRQ(ierr);
   ierr = PCSetType(pc, PCNONE);CHKERRQ(ierr);
   //ierr = PCSetType(pc, PCILU);CHKERRQ(ierr);
@@ -437,9 +437,18 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec rhs, void *ctx)
 #define __FUNCT__ "StokesJacobian"
 PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag, void *ctx)
 {
+  PetscReal      v[1];
+  PetscInt       n;
+  PetscErrorCode ierr;
 
   PetscFunctionBegin;
   // The nonlinear term has already been fixed up by StokesFunction() so we just need to deal with the preconditioner here.
+  ierr = VecGetSize(w, &n);CHKERRQ(ierr);
+  for (int i=0; i < n; i++) {
+    ierr = MatSetValues(*P, 1, &i, 1, &i, v, INSERT_VALUES);CHKERRQ(ierr);
+  }
+  ierr = MatAssemblyBegin(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   *flag = DIFFERENT_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
@@ -573,16 +582,18 @@ PetscErrorCode StokesRemoveConstantPressure(KSP ksp, StokesCtx *ctx, Vec *X, Mat
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
-  ierr = VecDuplicate(ctx->force, X);CHKERRQ(ierr);
-  ierr = VecGetSize(*X, &m);CHKERRQ(ierr);
-  ierr = VecGetArray(*X, &x);
-  for (int i=0; i < m; i++) {
+  ierr = VecGetArray(ctx->work[0], &x);CHKERRQ(ierr);
+  for (BlockIt it = BlockIt(ctx->numDims, ctx->dim); !it.done; it.next()) {
+    const PetscInt i = it.i;
     for (int j=0; j < ctx->numDims; j++) {
       x[i*(ctx->numDims+1)+j] = 0.0;
     }
     x[i*(ctx->numDims+1)+ctx->numDims] = 1.0;
   }
-  ierr = VecRestoreArray(*X, &x);CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->work[0], &x);CHKERRQ(ierr);
+  ierr = VecDuplicate(ctx->force, X);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterLG, ctx->work[0], *X, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterLG, ctx->work[0], *X, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = PetscObjectGetComm((PetscObject)ksp, &comm);CHKERRQ(ierr);
   ierr = MatNullSpaceCreate(comm, PETSC_FALSE, 1, X, ns);CHKERRQ(ierr);
   ierr = KSPSetNullSpace(ksp, *ns);CHKERRQ(ierr);
@@ -631,8 +642,8 @@ PetscErrorCode StokesExactCos(PetscInt d, PetscReal *coord, PetscReal *value, Pe
     value[0] = u; value[1] = v; value[2] = p;
   }
   if (rhs) {
-    rhs[0]   = PetscSqr(0.5 * PETSC_PI) * eta * u + PETSC_PI * sin(PETSC_PI * coord[0]) + 10;
-    rhs[1]   = PetscSqr(0.5 * PETSC_PI) * eta * v + PETSC_PI * sin(PETSC_PI * coord[1]) + 10;
+    rhs[0]   = 0.5 * PetscSqr(PETSC_PI) * eta * u - 0.25 * PETSC_PI * sin(PETSC_PI * coord[0]) + 10;
+    rhs[1]   = 0.5 * PetscSqr(PETSC_PI) * eta * v - 0.25 * PETSC_PI * sin(PETSC_PI * coord[1]) + 10;
     rhs[2]   = 0.0;
   }
   PetscFunctionReturn(0);

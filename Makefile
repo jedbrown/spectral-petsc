@@ -1,7 +1,8 @@
-ALL : ex15 shell foo
+ALL : etags stokes
 
 PROF?=
 CFLAGS+= ${PROF}
+ETAGS= etags.emacs
 include ${PETSC_DIR}/conf/base
 #include ${PETSC_DIR}/bmake/common/base
 
@@ -28,3 +29,6 @@ stokes : stokes.o chebyshev.o chkopts
 
 istest : istest.o chkopts
 	${CLINKER} -o istest istest.o ${PETSC_LIB}
+
+etags : chebyshev.c stokes.C util.C
+	${ETAGS} $^
