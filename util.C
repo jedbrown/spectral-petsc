@@ -73,7 +73,7 @@ void zeroInt(int d, int v[]) {
 
 #undef __FUNCT__
 #define __FUNCT__ "polyInterp"
-PetscErrorCode polyInterp(PetscInt n, PetscReal *x, PetscScalar *w, PetscReal x0, PetscReal x1, PetscScalar *f0, PetscScalar *f1)
+PetscErrorCode polyInterp(const PetscInt n, const PetscReal *x, PetscScalar *w, const PetscReal x0, const PetscReal x1, PetscScalar *f0, PetscScalar *f1)
 {
   PetscScalar *tmp;
   PetscInt o, e;

@@ -52,8 +52,9 @@ PetscErrorCode StokesSetupDomain(StokesCtx *);
 PetscErrorCode StokesCreateExactSolution(SNES, Vec u, Vec u2);
 PetscErrorCode StokesCheckResidual(SNES snes, Vec u, Vec x);
 PetscErrorCode StokesRemoveConstantPressure(KSP, StokesCtx *, Vec *, MatNullSpace *);
-//PetscErrorCode StokesRheologyPowerLaw(PetscInt d, PetscReal *stretching, PetscReal *eta, PetscReal *deta);
+PetscErrorCode StokesPressureReduceOrder(Vec u, StokesCtx *c);
 
+//PetscErrorCode StokesRheologyPowerLaw(PetscInt d, PetscReal *stretching, PetscReal *eta, PetscReal *deta);
 PetscErrorCode VecPrint2(Vec v, const char *name, StokesCtx *ctx);
 PetscErrorCode StokesRheologyLinear(PetscInt d, PetscReal *stretching, PetscReal *eta, PetscReal *deta, void *ctx);
 PetscErrorCode StokesExactNull(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
@@ -97,7 +98,8 @@ int main(int argc,char **args)
   //ierr = KSPSetType(ksp, KSPFGMRES);CHKERRQ(ierr);
   ierr = StokesRemoveConstantPressure(ksp, ctx, &nv, &ns);CHKERRQ(ierr);
   ierr = KSPGetPC(ksp, &pc);CHKERRQ(ierr);
-  ierr = PCSetType(pc, PCNONE);CHKERRQ(ierr);
+  //ierr = PCSetType(pc, PCNONE);CHKERRQ(ierr);
+  ierr = PCSetFromOptions(pc);CHKERRQ(ierr);
   //ierr = PCSetType(pc, PCILU);CHKERRQ(ierr);
   //ierr = PCFactorSetLevels(pc, 2);CHKERRQ(ierr);
 
@@ -110,6 +112,7 @@ int main(int argc,char **args)
   {
     ierr = PetscPrintf(comm, "Norm of solution %9.3e  norm of forcing %9.3e  norm of residual %9.3e\n", unorm, u2norm, rnorm);CHKERRQ(ierr);
   }
+  ierr = MatNullSpaceTest(ns, A);CHKERRQ(ierr);
 
   if (true) {
     ierr = VecSet(x, 0.0);CHKERRQ(ierr);
@@ -131,7 +134,7 @@ int main(int argc,char **args)
   ierr = MatDestroy(P);CHKERRQ(ierr);
   ierr = VecDestroy(x);CHKERRQ(ierr);           ierr = VecDestroy(r);CHKERRQ(ierr);
   ierr = VecDestroy(u);CHKERRQ(ierr);           ierr = VecDestroy(u2);CHKERRQ(ierr);
-  //ierr = MatNullSpaceDestroy(ns);CHKERRQ(ierr); ierr = VecDestroy(nv);CHKERRQ(ierr);
+  ierr = MatNullSpaceDestroy(ns);CHKERRQ(ierr); ierr = VecDestroy(nv);CHKERRQ(ierr);
 
   ierr = PetscFinalize();CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -315,7 +318,7 @@ PetscErrorCode StokesMatMult(Mat A, Vec xG, Vec yG)
   ierr = VecZeroEntries(xL);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  // FIXME: project interior pressure to boundary nodes
+  ierr = StokesPressureReduceOrder(xL, c);CHKERRQ(ierr);
 
   for (int i=0; i < d; i++) { ierr = MatMult(c->Dfield[i], xL, U[i]);CHKERRQ(ierr); }
   ierr = VecGetArrays(U, d, &u);CHKERRQ(ierr);
@@ -373,7 +376,7 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec rhs, void *ctx)
   ierr = VecScatterEnd(c->scatterGL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterDL, c->dirichlet, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterDL, c->dirichlet, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  // FIXME: project interior pressure to boundary nodes
+  ierr = StokesPressureReduceOrder(xL, c);CHKERRQ(ierr);
 
   for (int i=0; i < d; i++) { ierr = MatMult(c->Dfield[i], xL, c->gradu[i]);CHKERRQ(ierr); }
   //ierr = VecPrint2(c->gradu[0], "{u,v,w}_x", c);CHKERRQ(ierr);
@@ -435,18 +438,74 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec rhs, void *ctx)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesJacobian"
-PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag, void *ctx)
+PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag, void *void_ctx)
 {
-  PetscReal      v[1];
-  PetscInt       n;
+  StokesCtx     *ctx = (StokesCtx *)void_ctx;
+  PetscInt       d = ctx->numDims, *dim = ctx->dim, F = d + 1;
+  PetscReal     *x, *eta, *deta, **u0_;
+  PetscInt      *ixL, n;
+  PetscTruth     flg;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
   // The nonlinear term has already been fixed up by StokesFunction() so we just need to deal with the preconditioner here.
+  ierr = PetscTypeCompare((PetscObject)*P, MATSHELL, &flg);CHKERRQ(ierr);
+  if (flg) { printf("pc = shell\n"); PetscFunctionReturn(0); }
   ierr = VecGetSize(w, &n);CHKERRQ(ierr);
-  for (int i=0; i < n; i++) {
-    ierr = MatSetValues(*P, 1, &i, 1, &i, v, INSERT_VALUES);CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->deta, &deta); CHKERRQ(ierr);
+  ierr = VecGetArrays(ctx->gradu, d, &u0_); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISGetIndices(ctx->isLG, &ixL); CHKERRQ(ierr);
+  {
+    PetscInt row[F], col[(2*d+1)*F];
+    PetscScalar v[(2*d+1)*F];
+    PetscInt c, c0, r;
+    PetscScalar x0, xMM, xPP, xM, idxM, xP, idxP, idx, eM, deM, du0M, eP, deP, du0P;
+    for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) { // loop over local dof
+      const PetscInt i = it.i;
+      for (int f=0; f < F; f++) { // Each equation, corresponds to a row in the matrix
+        if (ixL[i*F+f] < 0 || n <= ixL[i*F+f]) continue; // Not a global dof
+        c = 0; r = 0;
+        c0 = c; row[r] = ixL[i*F+f]; col[c0] = row[r]; v[c0] = 0.0; r++; c++; // initialize diagonal term
+        for (int j=0; j < d; j++) {
+          const PetscInt iM = it.shift(j, -1);
+          const PetscInt iP = it.shift(j,  1);
+          if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
+          x0 = x[i*d+j]; xMM = x[iM*d+j]; xPP = x[iP*d+j];
+          xM = 0.5*(xMM+x0); idxM = 1.0/(x0-xMM); xP = 0.5*(x0+xPP); idxP = 1.0/(xPP-x0); idx = 1.0/(xP-xM);
+          eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]); du0M = 0.5*(u0_[j][iM*F+f]+u0_[j][i*F+f]);
+          eP = 0.5*(eta[iP]+eta[i]); deP = 0.5*(deta[iP]+deta[i]); du0P = 0.5*(u0_[j][iP*F+f]+u0_[j][i*F+f]);
+          //printf("eta %f %f %f\n", eta[iM], eta[i], eta[iP]);
+          deM = 0.0; du0M = 0.0; deP = 0.0; du0P = 0.0; // debugging
+          if (f < d) { // velocity
+            col[c] = ixL[iM*F+f]; v[c] = -idx * (idxM * eM - 0.5 * deM * du0M); c++;
+            col[c] = ixL[iP*F+f]; v[c] = -idx * (idxP * eP + 0.5 * deP * du0P); c++;
+            v[c0] += idx * (idxP * eP + idxM * eM - 0.5 * (deP * du0P - deM * du0M));
+            if (f == j) { // add the pressure gradient
+              col[c] = ixL[i *F+d]; v[c] = 0.5 * (idxM - idxP); c++;
+              col[c] = ixL[iM*F+d]; v[c] = -0.5 * idxM; c++;
+              col[c] = ixL[iP*F+d]; v[c] =  0.5 * idxP; c++;
+            }
+          } else { // pressure
+            col[c] = ixL[i *F+j]; v[c] = 0.5 * (idxM - idxP); c++;
+            col[c] = ixL[iM*F+j]; v[c] = -0.5 * idxM; c++;
+            col[c] = ixL[iP*F+j]; v[c] =  0.5 * idxP; c++;
+            v[c0] = 1.0e-8; // to avoid a zero on diagonal
+          }
+          //printf("i=%d f=%d j=%d row[..%d] = ",i,f,j,r); for (int i=0; i<r; i++) printf("%d ", row[i]); printf("\n");
+          //printf("col[..%2d] = ", c); for (int i=0; i<c; i++) printf("%d ", col[i]); printf("\n");
+        }
+        ierr = MatSetValues(*P, r, row, c, col, v, INSERT_VALUES); CHKERRQ(ierr);
+      }
+    }
   }
+  ierr = VecRestoreArray(ctx->eta, &eta); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->deta, &deta); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(ctx->gradu, d, &u0_); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISRestoreIndices(ctx->isLG, &ixL); CHKERRQ(ierr);
+
   ierr = MatAssemblyBegin(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   *flag = DIFFERENT_NONZERO_PATTERN;
@@ -597,6 +656,50 @@ PetscErrorCode StokesRemoveConstantPressure(KSP ksp, StokesCtx *ctx, Vec *X, Mat
   ierr = PetscObjectGetComm((PetscObject)ksp, &comm);CHKERRQ(ierr);
   ierr = MatNullSpaceCreate(comm, PETSC_FALSE, 1, X, ns);CHKERRQ(ierr);
   ierr = KSPSetNullSpace(ksp, *ns);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPressureReduceOrder"
+PetscErrorCode StokesPressureReduceOrder(Vec U, StokesCtx *c)
+{
+  PetscInt d = c->numDims, *dim = c->dim, F = d+1;
+  PetscReal *u, *coord, *work, *x;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  if (d != 2) SETERRQ1(1, "Not implemented for dimension %d\n", d);
+  //ierr = VecPrint2(U, "unfiltered", c);CHKERRQ(ierr);
+  PetscInt m = dim[0], n = dim[1], mn = PetscMax(m,n);
+  ierr = PetscMalloc2(4*mn, PetscReal, &work, mn, PetscReal, &x);CHKERRQ(ierr);
+  ierr = VecGetArray(U, &u);CHKERRQ(ierr);
+  ierr = VecGetArray(c->coord, &coord);CHKERRQ(ierr);
+  for (int i=1; i < m; i++) {
+    const PetscReal yM = coord[(i*n+0)*d+1];
+    const PetscReal yP = coord[(i*n+n-1)*d+1];
+    for (int j=0; j < n-2; j++) { // initialize Neville's algorithm
+      x[j] = coord[(i*n+(j+1))*d+1]; // get `y` component
+      work[j*4] = u[(i*n+(j+1))*F+d];
+      work[j*4+1] = work[j*4];
+    }
+    ierr = polyInterp(n-2, x, work, yM, yP, &u[(i*n+0)*F+d], &u[(i*n+n-1)*F+d]);CHKERRQ(ierr);
+  }
+  for (int j=0; j < n; j++) { // This will set the corner values as well.
+    const PetscReal xM = coord[(0*n+j)*d];
+    const PetscReal xP = coord[((m-1)*n+j)*d];
+    for (int i=0; i < m-2; i++) {
+      x[i]  = coord[((i+1)*n+j)*d+0]; // get `x' component
+      work[i*4] = u[((i+1)*n+j)*F+d];
+      work[i*4+1] = work[i*4];
+    }
+    //for (int k=0; k < m-2; k++) { printf("%4f ", x[k]); } printf("\n");
+    //for (int k=0; k < m-2; k++) { printf("%4f ", work[k*4]); } printf("\n");
+    ierr = polyInterp(m-2, x, work, xM, xP, &u[(0*n+j)*F+d], &u[((m-1)*n+j)*F+d]);CHKERRQ(ierr);
+  }
+  ierr = VecRestoreArray(U, &u);CHKERRQ(ierr);
+  ierr = VecRestoreArray(c->coord, &coord);CHKERRQ(ierr);
+  //ierr = VecPrint2(U, "filtered", c);CHKERRQ(ierr);
+  ierr = PetscFree2(work, x);
   PetscFunctionReturn(0);
 }
 
