@@ -30,5 +30,8 @@ stokes : stokes.o chebyshev.o chkopts
 istest : istest.o chkopts
 	${CLINKER} -o istest istest.o ${PETSC_LIB}
 
+util : util.o chkopts
+	${CLINKER} -o util util.o ${PETSC_LIB}
+
 etags : chebyshev.c stokes.C util.C
 	${ETAGS} $^
