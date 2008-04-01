@@ -126,7 +126,6 @@ int main(int argc,char **args)
 
   // u = exact solution, u2 = A(u) u (used as forcing term)
   ierr = StokesCreateExactSolution(snes, u, u2);CHKERRQ(ierr);
-  ierr = VecPrint2(u2, ctx->dim[0]-2, ctx->dim[1]-2, 3, "exact gforce", "uvp");CHKERRQ(ierr);
   ierr = StokesFunction(snes, u, r, ctx);CHKERRQ(ierr);
   ierr = VecNorm(u, NORM_INFINITY, &unorm);CHKERRQ(ierr);
   ierr = VecNorm(u2, NORM_INFINITY, &u2norm);CHKERRQ(ierr);
@@ -149,6 +148,8 @@ int main(int argc,char **args)
     ierr = SNESSolve(snes, PETSC_NULL, x);CHKERRQ(ierr);
 
     ierr = VecAXPY(x, -1.0, u);CHKERRQ(ierr);
+    ierr = MatNullSpaceRemove(ns, x, PETSC_NULL);CHKERRQ(ierr);
+    if (ctx->options->debug > 0) { ierr = VecPrint2(x, ctx->dim[0]-2, ctx->dim[1]-2, 3, "final error", "uvp");CHKERRQ(ierr); }
     ierr = VecNorm(x, NORM_INFINITY, &norm);CHKERRQ(ierr);
     ierr = SNESGetIterationNumber(snes, &its);CHKERRQ(ierr);
     ierr = SNESGetConvergedReason(snes, &reason);CHKERRQ(ierr);
@@ -911,20 +912,22 @@ PetscErrorCode StokesPCApply(void *void_ctx, Vec x, Vec y)
   ierr = VecScatterBegin(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
+  ierr = VecZeroEntries(y);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = MatMult(c->MatPV, c->vG1, c->pG0);CHKERRQ(ierr);
   ierr = VecScale(c->pG0, -1.0);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGP, x, c->pG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGP, x, c->pG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-
-  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
-  ierr = MatMult(c->MatVP, c->pG1, c->vG1);CHKERRQ(ierr);
-  ierr = VecAXPY(c->vG0, -1.0, c->vG1);CHKERRQ(ierr);
-  ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
-
-  ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  // KSPSolve tampers with vG0 and vG1
+  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = MatMult(c->MatVP, c->pG1, c->vG0);CHKERRQ(ierr);
+  ierr = VecScale(c->vG0, -1.0);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterVG, c->vG1, y, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
