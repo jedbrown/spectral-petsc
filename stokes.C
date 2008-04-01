@@ -594,78 +594,60 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesJacobian"
-PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag, void *void_ctx)
+PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *Ashell, Mat *Pshell, MatStructure *flag, void *void_ctx)
 {
   StokesCtx     *ctx = (StokesCtx *)void_ctx;
-  PetscInt       d = ctx->numDims, *dim = ctx->dim, F = d + 1;
-  PetscReal     *x, *eta, *deta, **u0_;
+  Mat            P = ctx->MatVVPC;
+  PetscInt       d = ctx->numDims, *dim = ctx->dim;
+  PetscReal     *x, *eta, *deta, **strain;
   PetscInt      *ixL, n;
   PetscTruth     flg;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
-  // The nonlinear term has already been fixed up by StokesFunction() so we just need to deal with the preconditioner here.
-#if 0
-  ierr = PetscTypeCompare((PetscObject)*P, MATSHELL, &flg);CHKERRQ(ierr);
+  // The nonlinear term has already been fixed up by StokesFunction() so we just need to deal with the preconditioner for the velocity system.
+  ierr = PetscTypeCompare((PetscObject)P, MATSHELL, &flg);CHKERRQ(ierr);
   if (flg) { printf("pc = shell\n"); PetscFunctionReturn(0); }
   ierr = VecGetSize(w, &n);CHKERRQ(ierr);
   ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(ctx->deta, &deta); CHKERRQ(ierr);
-  ierr = VecGetArrays(ctx->gradu, d, &u0_); CHKERRQ(ierr);
+  ierr = VecGetArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
   ierr = VecGetArray(ctx->coord, &x); CHKERRQ(ierr);
-  ierr = ISGetIndices(ctx->isLG, &ixL); CHKERRQ(ierr);
+  ierr = ISGetIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
   {
-    PetscInt row[F], col[(2*d+1)*F];
-    PetscScalar v[(2*d+1)*F];
-    PetscInt c, c0, r;
+    PetscInt row, col[2*d+1], c;
+    PetscScalar v[2*d+1];
     PetscScalar x0, xMM, xPP, xM, idxM, xP, idxP, idx, eM, deM, du0M, eP, deP, du0P;
     for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) { // loop over local dof
       const PetscInt i = it.i;
-      for (int f=0; f < F; f++) { // Each equation, corresponds to a row in the matrix
-        if (ixL[i*F+f] < 0 || n <= ixL[i*F+f]) continue; // Not a global dof
-        c = 0; r = 0;
-        c0 = c; row[r] = ixL[i*F+f]; col[c0] = row[r]; v[c0] = 0.0; r++; c++; // initialize diagonal term
-        for (int j=0; j < d; j++) {
+      for (int f=0; f < d; f++) { // Each equation, corresponds to a row in the matrix
+        if (ixL[i*d+f] < 0 || n <= ixL[i*d+f]) continue; // Not a global dof
+        row = ixL[i*d+f]; col[0] = row; v[0] = 0.0; c=1; // initialize diagonal term
+        for (int j=0; j < d; j++) { // each direction
           const PetscInt iM = it.shift(j, -1);
           const PetscInt iP = it.shift(j,  1);
           if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
           x0 = x[i*d+j]; xMM = x[iM*d+j]; xPP = x[iP*d+j];
           xM = 0.5*(xMM+x0); idxM = 1.0/(x0-xMM); xP = 0.5*(x0+xPP); idxP = 1.0/(xPP-x0); idx = 1.0/(xP-xM);
-          eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]); du0M = 0.5*(u0_[j][iM*F+f]+u0_[j][i*F+f]);
-          eP = 0.5*(eta[iP]+eta[i]); deP = 0.5*(deta[iP]+deta[i]); du0P = 0.5*(u0_[j][iP*F+f]+u0_[j][i*F+f]);
+          eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]);
+          eP = 0.5*(eta[iP]+eta[i]); deP = 0.5*(deta[iP]+deta[i]);
           //printf("eta %f %f %f\n", eta[iM], eta[i], eta[iP]);
-          deM = 0.0; du0M = 0.0; deP = 0.0; du0P = 0.0; // debugging
-          if (f < d) { // velocity
-            col[c] = ixL[iM*F+f]; v[c] = -idx * (idxM * eM - 0.5 * deM * du0M); c++;
-            col[c] = ixL[iP*F+f]; v[c] = -idx * (idxP * eP + 0.5 * deP * du0P); c++;
-            v[c0] += idx * (idxP * eP + idxM * eM - 0.5 * (deP * du0P - deM * du0M));
-            if (f == j) { // add the pressure gradient
-              col[c] = ixL[i *F+d]; v[c] = 0.5 * (idxM - idxP); c++;
-              col[c] = ixL[iM*F+d]; v[c] = -0.5 * idxM; c++;
-              col[c] = ixL[iP*F+d]; v[c] =  0.5 * idxP; c++;
-            }
-          } else { // pressure
-            col[c] = ixL[i *F+j]; v[c] = 0.5 * (idxM - idxP); c++;
-            col[c] = ixL[iM*F+j]; v[c] = -0.5 * idxM; c++;
-            col[c] = ixL[iP*F+j]; v[c] =  0.5 * idxP; c++;
-            v[c0] = 1.0e-8; // to avoid a zero on diagonal
-          }
-          //printf("i=%d f=%d j=%d row[..%d] = ",i,f,j,r); for (int i=0; i<r; i++) printf("%d ", row[i]); printf("\n");
-          //printf("col[..%2d] = ", c); for (int i=0; i<c; i++) printf("%d ", col[i]); printf("\n");
+          col[c] = ixL[iM*d+f]; v[c] = -idx * (idxM * eM); c++;
+          col[c] = ixL[iP*d+f]; v[c] = -idx * (idxP * eP); c++;
+          v[0] += idx * (idxP * eP + idxM * eM);
         }
-        ierr = MatSetValues(*P, r, row, c, col, v, INSERT_VALUES); CHKERRQ(ierr);
+        ierr = MatSetValues(P, 1, &row, c, col, v, INSERT_VALUES); CHKERRQ(ierr);
       }
     }
   }
   ierr = VecRestoreArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->deta, &deta); CHKERRQ(ierr);
-  ierr = VecRestoreArrays(ctx->gradu, d, &u0_); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->coord, &x); CHKERRQ(ierr);
-  ierr = ISRestoreIndices(ctx->isLG, &ixL); CHKERRQ(ierr);
+  ierr = ISRestoreIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
 
-  ierr = MatAssemblyBegin(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(*P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-#endif
+  ierr = MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(P, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   *flag = DIFFERENT_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
