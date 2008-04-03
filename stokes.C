@@ -10,11 +10,16 @@ static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev c
 #include <petscsnes.h>
 #include <stdbool.h>
 
-typedef enum { DIRICHLET, NEUMANN } BdyType;
+typedef enum { DIRICHLET, NEUMANN, MIXED } BdyType;
 
 typedef PetscErrorCode(*ExactSolution)(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
 typedef PetscErrorCode(*BdyFunc)(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 typedef PetscErrorCode(*Rheology)(PetscInt d, PetscReal gamma, PetscReal *eta, PetscReal *deta, void *ctx);
+
+typedef struct {
+  ExactSolution exact;
+  void *exactCtx;
+} StokesExactBoundaryCtx;
 
 typedef struct {
   PetscInt       debug, cont0, cont;
@@ -81,6 +86,7 @@ PetscErrorCode StokesExact1(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
 PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
 PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
+PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 
 #undef __FUNCT__
 #define __FUNCT__ "main"
@@ -309,6 +315,7 @@ PetscErrorCode StokesDestroy (StokesCtx *c)
   ierr = VecScatterDestroy(c->scatterVG);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterGV);CHKERRQ(ierr);
   ierr = PetscFree2(c->DP, c->DV);CHKERRQ(ierr);
   ierr = PetscFree(c->dim);CHKERRQ(ierr);
+  if (c->options->boundaryCtx) { ierr = PetscFree(c->options->boundaryCtx);CHKERRQ(ierr); }
   ierr = PetscFree2(c, c->options);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -372,8 +379,16 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   }
   switch (boundary) {
     case 0:
-      opt->boundary    = StokesDirichlet;
-      opt->boundaryCtx = (void *)opt->exact; // The dirichlet condition just evaluates the exact solution.
+      opt->boundary    = StokesDirichlet; // The dirichlet condition just evaluates the exact solution.
+      ierr = PetscMalloc(sizeof(StokesExactBoundaryCtx), &opt->boundaryCtx);CHKERRQ(ierr);
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exact = opt->exact;
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exactCtx = opt->exactCtx;
+      break;
+    case 1:
+      opt->boundary    = StokesBoundary1; // This condition evaluates and numerically differentiates the exact solution;
+      ierr = PetscMalloc(sizeof(StokesExactBoundaryCtx), &opt->boundaryCtx);CHKERRQ(ierr);
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exact = opt->exact;
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exactCtx = opt->exactCtx;
       break;
     default:
       SETERRQ1(PETSC_ERR_SUP, "Boundary type %d not implemented", exact);
@@ -986,24 +1001,42 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
   ierr = VecScatterBegin(ctx->scatterPL, ctx->pG0, ctx->workP[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterPL, ctx->pG0, ctx->workP[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, ctx->vG0, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  ierr = VecScatterEnd(ctx->scatterGV, ctx->vG0, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterVL, ctx->vG0, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = StokesPressureReduceOrder(ctx->workP[0], ctx);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+
+  ierr = VecScatterBegin(ctx->scatterGP, ctx->force, ctx->pG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterGP, ctx->force, ctx->pG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterGV, ctx->force, ctx->vG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterGV, ctx->force, ctx->vG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterPL, ctx->pG1, ctx->workP[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterPL, ctx->pG1, ctx->workP[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterVL, ctx->vG1, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterVL, ctx->vG1, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesPressureReduceOrder(ctx->workP[1], ctx);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterDL, ctx->dirichlet, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterDL, ctx->dirichlet, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+
+
   ierr = PetscViewerCreate(PETSC_COMM_SELF, &view);CHKERRQ(ierr);
   ierr = PetscViewerSetType(view, PETSC_VIEWER_ASCII);CHKERRQ(ierr);
-  //ierr = PetscViewerSetFormat(view, PETSC_VIEWER_ASCII_VTK);CHKERRQ(ierr);
+  //ierr = PetscViewerSetFormat(view, PETSC_VIEWER_ASCII_VTK);CHKERRQ(ierr);  // Maybe there is a way to make this work properly?
   ierr = PetscViewerFileSetName(view, "stokes.vtk");CHKERRQ(ierr);
   ierr = PetscViewerASCIIPrintf(view, "# vtk DataFile Version 2.0\nStokes Output\nASCII\nDATASET STRUCTURED_GRID\n");CHKERRQ(ierr);
   {
-    PetscInt d = ctx->numDims, *dim = ctx->dim, m = dim[0], n = dim[1], p = 1;
-    PetscInt nodes = productInt(ctx->numDims, ctx->dim);
+    PetscInt d = ctx->numDims, *dim = ctx->dim, m = dim[0], n = dim[1], p = (d > 2) ? dim[2] : 1;
+    PetscInt nodes = productInt(d, dim);
     ierr = PetscViewerASCIIPrintf(view, "DIMENSIONS %d %d %d\nPOINTS %d double\n", m, n, p, m*n*p);CHKERRQ(ierr);
-    ierr = StokesVecView(ctx->coord, nodes, 2, 3, view);CHKERRQ(ierr);
+    ierr = StokesVecView(ctx->coord, nodes, d, 3, view);CHKERRQ(ierr);
     ierr = PetscViewerASCIIPrintf(view, "\nPOINT_DATA %d\nVECTORS velocity double\n", m*n*p);CHKERRQ(ierr);
-    ierr = StokesVecView(ctx->workV[0], nodes, 2, 3, view);CHKERRQ(ierr);
+    ierr = StokesVecView(ctx->workV[0], nodes, d, 3, view);CHKERRQ(ierr);
     ierr = PetscViewerASCIIPrintf(view, "\nSCALARS pressure double 1\nLOOKUP_TABLE default\n");CHKERRQ(ierr);
     ierr = StokesVecView(ctx->workP[0], nodes, 1, 1, view);CHKERRQ(ierr);
+    ierr = PetscViewerASCIIPrintf(view, "\nVECTORS vel_force double\n", m*n*p);CHKERRQ(ierr);
+    ierr = StokesVecView(ctx->workV[1], nodes, d, 3, view);CHKERRQ(ierr);
+    ierr = PetscViewerASCIIPrintf(view, "\nSCALARS div_force double 1\nLOOKUP_TABLE default\n");CHKERRQ(ierr);
+    ierr = StokesVecView(ctx->workP[1], nodes, 1, 1, view);CHKERRQ(ierr);
     ierr = PetscViewerASCIIPrintf(view, "\nSCALARS eta double 1\nLOOKUP_TABLE default\n");CHKERRQ(ierr);
     ierr = StokesVecView(ctx->eta, nodes, 1, 1, view);CHKERRQ(ierr);
     ierr = PetscViewerASCIIPrintf(view, "\nSCALARS deta double 1\nLOOKUP_TABLE default\n");CHKERRQ(ierr);
@@ -1015,7 +1048,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
       for (int i=0; i < nodes; i++) {
         for (int j=0; j < 3; j++) {
           for (int k=0; k < 3; k++) {
-            ierr = PetscViewerASCIIPrintf(view, "%20e ", (j<2 && k<2) ? strain[j][i*2+k] : 0.0);CHKERRQ(ierr);
+            ierr = PetscViewerASCIIPrintf(view, "%20e ", (j<d && k<d) ? strain[j][i*d+k] : 0.0);CHKERRQ(ierr);
           }
           ierr = PetscViewerASCIIPrintf(view, "\n");
         }
@@ -1024,10 +1057,6 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
       ierr = VecRestoreArrays(ctx->strain, d, &strain);CHKERRQ(ierr);
     }
   }
-
-  //ierr = VecView(ctx->coord, view);CHKERRQ(ierr);
-  //ierr = VecView(ctx->workP[0], view);CHKERRQ(ierr);
-  //ierr = VecView(ctx->workV[0], view);CHKERRQ(ierr);
   ierr = PetscViewerDestroy(view);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -1133,17 +1162,19 @@ PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   PetscReal u, v, p;
 
   PetscFunctionBegin; InFunction;
-  if (d != 2) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
+  if (d > 3) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
   u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
   v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
   p = 0.0;
   if (value) {
     value[0] = u; value[1] = v; value[2] = p;
+    if (d == 3) value[2] = 0.0;
   }
   if (rhs) {
     rhs[0]   = PetscSqr(0.5 * PETSC_PI) * eta * u;
     rhs[1]   = PetscSqr(0.5 * PETSC_PI) * eta * v;
-    rhs[2]   = 0.0;
+    if (d == 3) rhs[2] = 0.0;
+    rhs[d]   = 0.0;
   }
   PetscFunctionReturn(0);
 }
@@ -1174,14 +1205,45 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesDirichlet"
-PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx)
+PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
 {
-  ExactSolution exact = (ExactSolution)ctx;
+  StokesExactBoundaryCtx *ctx = (StokesExactBoundaryCtx *)void_ctx;
   PetscErrorCode ierr;
 
   PetscFunctionBegin; InFunction;
   *type = DIRICHLET;
-  ierr = exact(d, coord, value, PETSC_NULL, PETSC_NULL);CHKERRQ(ierr);
+  ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesBoundary1"
+PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
+{
+  const PetscReal epsilon = 1e-6;
+  StokesExactBoundaryCtx *ctx = (StokesExactBoundaryCtx *)void_ctx;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin; InFunction;
+  if (coord[d-1] > 0.999) { // Impose condition at the 'surface'
+    PetscReal x[d], v[d], w[d], vel[d][d];
+    *type = NEUMANN;
+    for (int i=0; i < d; i++) {
+      ierr = ctx->exact(d, coord, v, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+      for (int j=0; j < d; j++) { x[j] = coord[j] + epsilon * ((i == j) ? 1 : 0); }
+      ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+      for (int j=0; j < d; j++) { vel[j][i] = (1.0 / epsilon) * (w[j] - v[j]); }
+    }
+    for (int i=0; i < d; i++) { // multiply velocity gradient tensor with normal vector
+      value[i] = 0.0;
+      for (int j=0; j < d; j++) {
+        value[i] += 0.5 * (vel[j][i] + vel[i][j]) * normal[j];
+      }
+    }
+  } else { // Simply impose dirichlet conditions
+    *type = DIRICHLET;
+    ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+  }
   PetscFunctionReturn(0);
 }
 
