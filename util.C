@@ -3,6 +3,8 @@
 #include <petscvec.h>
 #endif
 
+PetscScalar dotScalar(PetscInt d, PetscScalar x[], PetscScalar y[]);
+
 class BlockIt {
   public:
   BlockIt(int d, int *dim) : d(d) {
@@ -40,6 +42,19 @@ class BlockIt {
     const int is = ind[j] + s;
     if (is < 0 || is >= dim[j]) return -1;
     return i + s * stride[j];
+  }
+  bool normal(PetscReal *n) const {
+    PetscReal n2;
+    for (int j=0; j < d; j++) { // Compute normal vector
+      if      (ind[j] == 0)          { n[j] = -1.0; }
+      else if (ind[j] == dim[j] - 1) { n[j] =  1.0;  }
+      else                           { n[j] =  0.0;  }
+    }
+    n2 = dotScalar(d, n, n);
+    if (n2 > 1e-10) {
+      for (int j=0; j < d; j++) n[j] /= sqrt(n2); // normalize n
+    }
+    return (n2 > 1e-10);
   }
   bool done;
   int i, *ind;

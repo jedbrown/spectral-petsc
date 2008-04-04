@@ -17,9 +17,15 @@ typedef PetscErrorCode(*BdyFunc)(PetscInt d, PetscReal *coord, PetscReal *normal
 typedef PetscErrorCode(*Rheology)(PetscInt d, PetscReal gamma, PetscReal *eta, PetscReal *deta, void *ctx);
 
 typedef struct {
-  ExactSolution exact;
-  void *exactCtx;
+  ExactSolution  exact;
+  void          *exactCtx;
 } StokesExactBoundaryCtx;
+
+typedef struct { // For higher dimensions, use a different value of `3'
+  PetscReal normal[3], value[3], alpha;
+  BdyType   type;
+  PetscInt  localIndex;
+} StokesBoundaryMixed;
 
 typedef struct {
   PetscInt       debug, cont0, cont;
@@ -33,7 +39,7 @@ typedef struct {
 typedef struct {
   MPI_Comm       comm;
   StokesOptions *options;
-  PetscInt       numDims, numWorkP, numWorkV;
+  PetscInt       numDims, numWorkP, numWorkV, numMixed;
   PetscInt      *dim;
   KSP            KSPSchur, KSPVelocity, KSPSchurVelocity;
   MatNullSpace   NullSpaceSchur;
@@ -53,6 +59,7 @@ typedef struct {
   VecScatter     scatterLD, scatterDL; // velocity local <-> special dirichlet
   VecScatter     scatterPG, scatterGP; // global pressure <-> full global
   VecScatter     scatterVG, scatterGV; // global velocity <-> full global
+  StokesBoundaryMixed *mixed;
 } StokesCtx;
 
 PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *x, StokesCtx **);
@@ -71,6 +78,8 @@ PetscErrorCode StokesCreateExactSolution(SNES, Vec u, Vec u2);
 PetscErrorCode StokesCheckResidual(SNES snes, Vec u, Vec x);
 PetscErrorCode StokesRemoveConstantPressure(KSP, StokesCtx *, Vec *, MatNullSpace *);
 PetscErrorCode StokesPressureReduceOrder(Vec u, StokesCtx *c);
+PetscErrorCode StokesMixedApply(StokesCtx *, Vec vL, Vec *stressL, Vec xL);
+PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesPCApply(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp(void *);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
@@ -207,7 +216,7 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
   ierr = StokesProcessOptions(c);CHKERRQ(ierr);
   d = c->numDims; dim = c->dim; m = productInt(d, dim);
   ierr = PetscMalloc2(d, Mat, &c->DP, d, Mat, &c->DV);CHKERRQ(ierr);
-  c->numWorkP = 2*d+1; c->numWorkV = 2*d+1;
+  c->numWorkP = 2*d+1; c->numWorkV = 2 + 3*d;
   ierr = VecCreate(comm, &c->eta);CHKERRQ(ierr); // Prototype for scalar valued local
   ierr = VecSetSizes(c->eta, m, PETSC_DECIDE);CHKERRQ(ierr);
   ierr = VecSetFromOptions(c->eta);CHKERRQ(ierr);
@@ -313,6 +322,7 @@ PetscErrorCode StokesDestroy (StokesCtx *c)
   ierr = VecScatterDestroy(c->scatterLD);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterDL);CHKERRQ(ierr);
   ierr = VecScatterDestroy(c->scatterPG);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterGP);CHKERRQ(ierr);
   ierr = VecScatterDestroy(c->scatterVG);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterGV);CHKERRQ(ierr);
+  if (c->numMixed > 0) { ierr = PetscFree(c->mixed);CHKERRQ(ierr); }
   ierr = PetscFree2(c->DP, c->DV);CHKERRQ(ierr);
   ierr = PetscFree(c->dim);CHKERRQ(ierr);
   if (c->options->boundaryCtx) { ierr = PetscFree(c->options->boundaryCtx);CHKERRQ(ierr); }
@@ -481,6 +491,7 @@ PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscTruth withDirichlet, Vec xG
   for (int i=0; i < ctx->numDims; i++) {
     ierr = VecStrideGather(ctx->workV[0], i, ctx->workP[0], INSERT_VALUES);CHKERRQ(ierr);
     ierr = MatMult(ctx->DP[i], ctx->workP[0], ctx->workP[1]);CHKERRQ(ierr);
+    // FIXME: coordinate transform
     //ierr = VecPrint2(ctx->workP[0],  ctx->dim[0], ctx->dim[1], 1, "uv component", "?");CHKERRQ(ierr);
     //ierr = VecPrint2(ctx->workP[1],  ctx->dim[0], ctx->dim[1], 1, "uv gradient", "?");CHKERRQ(ierr);
     ierr = VecAXPY(ctx->workP[2], 1.0, ctx->workP[1]);CHKERRQ(ierr);
@@ -504,10 +515,11 @@ PetscErrorCode StokesMatMultVP(Mat A, Vec xG, Vec yG) // gradient of pressure
   ierr = VecScatterEnd(ctx->scatterPL, xG, ctx->workP[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = StokesPressureReduceOrder(ctx->workP[0], ctx);CHKERRQ(ierr);
   ierr = VecZeroEntries(ctx->workV[0]);CHKERRQ(ierr);
-  for (int i=0; i < ctx->numDims; i++) {
+  for (int i=0; i < ctx->numDims; i++) { // FIXME: coordinate transform
     ierr = MatMult(ctx->DP[i], ctx->workP[0], ctx->workP[1]);CHKERRQ(ierr);
     ierr = VecStrideScatter(ctx->workP[1], i, ctx->workV[0], INSERT_VALUES);CHKERRQ(ierr);
   }
+  ierr = StokesMixedFilter(ctx, ctx->workV[0]);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterLV, ctx->workV[0], yG, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterLV, ctx->workV[0], yG, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -519,22 +531,24 @@ PetscErrorCode StokesMatMultVV(Mat A, Vec xG, Vec yG) // Jacobian of viscous ter
 {
   StokesCtx      *ctx;
   PetscInt        d, *dim, n;
-  Vec             xL, yL, *V;
-  PetscReal      *eta, *deta, **v, **Strain;
+  Vec             xL, yL, *V, *W, *Stress;
+  PetscReal      *eta, *deta, **v, **Strain, **stress;
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = MatShellGetContext(A, (void **)&ctx);CHKERRQ(ierr);
   d = ctx->numDims; dim = ctx->dim; n = productInt(d, dim);
-  xL = ctx->workV[0]; yL = ctx->workV[1]; V = &ctx->workV[2];
+  xL = ctx->workV[0]; yL = ctx->workV[1]; V = &ctx->workV[2]; W = &ctx->workV[2+d]; Stress = &ctx->workV[2+2*d];
   ierr = VecZeroEntries(xL);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterVL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   for (int i=0; i < d; i++) { ierr = MatMult(ctx->DV[i], xL, V[i]);CHKERRQ(ierr); }
+  // FIXME: Coordinate transformation
   ierr = VecGetArrays(V, d, &v);CHKERRQ(ierr);
   ierr = VecGetArray(ctx->eta, &eta);CHKERRQ(ierr);
   ierr = VecGetArray(ctx->deta, &deta);CHKERRQ(ierr);
   ierr = VecGetArrays(ctx->strain, d, &Strain);CHKERRQ(ierr);
+  ierr = VecGetArrays(Stress, d, &stress);CHKERRQ(ierr);
   // In `U' we have gradients [u_x v_x w_x p_x] [u_y v_y w_y p_y] [u_z v_z w_z p_z]
   for (int i=0; i < n; i++) { // each node
     PetscReal strain[d][d], z=0.0;
@@ -546,7 +560,9 @@ PetscErrorCode StokesMatMultVV(Mat A, Vec xG, Vec yG) // Jacobian of viscous ter
     }
     for (int j=0; j < d; j++) { // each direction's derivative
       for (int k=0; k < d; k++) { // each velocity component
-        v[j][i*d+k] = eta[i] * strain[j][k] + deta[i] * Strain[j][i*d+k] * z;
+        const PetscReal s = eta[i] * strain[j][k];
+        stress[j][i*d+k] = s;
+        v[j][i*d+k] = s + deta[i] * Strain[j][i*d+k] * z;
       }
     }
   }
@@ -554,11 +570,12 @@ PetscErrorCode StokesMatMultVV(Mat A, Vec xG, Vec yG) // Jacobian of viscous ter
   ierr = VecRestoreArray(ctx->eta, &eta);CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->deta, &deta);CHKERRQ(ierr);
   ierr = VecRestoreArrays(ctx->strain, d, &Strain);CHKERRQ(ierr);
+  ierr = VecRestoreArrays(Stress, d, &stress);CHKERRQ(ierr);
+  for (int i=0; i < d; i++) { ierr = MatMult(ctx->DV[i], V[i], W[i]);CHKERRQ(ierr); }
+  // FIXME: coordinate transform
   ierr = VecZeroEntries(yL);CHKERRQ(ierr);
-  for (int i=0; i < d; i++) {
-    ierr = MatMult(ctx->DV[i], V[i], xL);CHKERRQ(ierr);
-    ierr = VecAXPY(yL, -1.0, xL);CHKERRQ(ierr);
-  }
+  for (int i=0; i < d; i++) { ierr = VecAXPY(yL, -1.0, W[i]);CHKERRQ(ierr); }
+  ierr = StokesMixedApply(ctx, xL, Stress, yL);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterLV, yL, yG, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterLV, yL, yG, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -569,14 +586,14 @@ PetscErrorCode StokesMatMultVV(Mat A, Vec xG, Vec yG) // Jacobian of viscous ter
 PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
 {
   StokesCtx       *c = (StokesCtx *)ctx;
-  PetscInt         n, d, F;
-  Vec              xL, yL, *V;
+  PetscInt         n, d;
+  Vec              xL, yL, *V, *W;
   PetscReal      **v, **strain, *eta, *deta;
   PetscErrorCode   ierr;
 
   PetscFunctionBegin; InFunction;
-  d = c->numDims; F = d+1; n = productInt(d, c->dim);
-  xL = c->workV[0]; yL = c->workV[1]; V = &c->workV[2];
+  d = c->numDims; n = productInt(d, c->dim);
+  xL = c->workV[0]; yL = c->workV[1]; V = &c->workV[2]; W = &c->workV[2+d];
   ierr = VecScatterBegin(c->scatterGP, xG, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGP, xG, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGV, xG, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -587,14 +604,16 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
   ierr = VecScatterEnd(c->scatterDL, c->dirichlet, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
 
   for (int i=0; i < d; i++) { ierr = MatMult(c->DV[i], xL, c->strain[i]);CHKERRQ(ierr); }
+  // FIXME: coordinate tranform
 
   if (true) { // Symmetrize strain, compute nonlinear contributions
-    PetscReal s[d][d], gamma=0.0;
+    PetscReal s[d][d], gamma;
     ierr = VecGetArrays(c->strain, d, &strain);CHKERRQ(ierr);
     ierr = VecGetArray(c->eta, &eta);CHKERRQ(ierr);
     ierr = VecGetArray(c->deta, &deta);CHKERRQ(ierr);
     ierr = VecGetArrays(V, d, &v);CHKERRQ(ierr);
     for (int i=0; i < n; i++) { // each node
+      gamma = 0.0;
       for (int j=0; j < d; j++) { // each direction
         for (int k=0; k < d; k++) { // each component of velocity
           s[j][k] = 0.5 * (strain[j][i*d+k] + strain[k][i*d+j]);
@@ -620,11 +639,11 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
       ierr = PetscPrintf(PETSC_COMM_WORLD, "Minimum eta = %9.3e   Maximum eta = %9.3e\n", minEta, maxEta);CHKERRQ(ierr);
     }
   }
+  for (int i=0; i < d; i++) { ierr = MatMult(c->DV[i], V[i], W[i]);CHKERRQ(ierr); }
+  // FIXME: coordinate transform
   ierr = VecZeroEntries(yL);CHKERRQ(ierr);
-  for (int i=0; i < d; i++) {
-    ierr = MatMult(c->DV[i], V[i], xL);CHKERRQ(ierr);
-    ierr = VecAXPY(yL, -1.0, xL);CHKERRQ(ierr);
-  }
+  for (int i=0; i < d; i++) { ierr = VecAXPY(yL, -1.0, W[i]);CHKERRQ(ierr); }
+  ierr = StokesMixedApply(c, xL, V, yL);CHKERRQ(ierr);
   //ierr = VecPrint2(yL,  c->dim[0], c->dim[1], 2, "viscous", "uv");CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterLV, yL, c->vG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterLV, yL, c->vG1, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -650,7 +669,7 @@ PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *Ashell, Mat *Pshell, MatStr
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
-  // The nonlinear term has already been fixed up by StokesFunction() so we need not do anything here.
+  // The nonlinear term has already been fixed up by StokesFunction() so we do nothing here.
   *flag = DIFFERENT_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
@@ -659,40 +678,53 @@ PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *Ashell, Mat *Pshell, MatStr
 #define __FUNCT__ "StokesSetupDomain"
 PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
 {
-  MPI_Comm        comm = c->comm;
-  PetscInt        d = c->numDims, *dim = c->dim, m = productInt(d, dim), n = d*m, N=n+m;
-  IS              isG, isD;
-  PetscInt       *ixLP, *ixPL, *ixLV, *ixVL, *ixLD, *ixDL, *ixPG, *ixGP, *ixVG, *ixGV;
-  PetscInt        lp, lv, gp, gv, dv, g;
-  PetscReal      *v, *w, *x;
-  BdyType         type;
-  Vec             uG, pL, pG, vL, vG, vD;
-  PetscErrorCode  ierr;
+  MPI_Comm             comm = c->comm;
+  PetscInt             d    = c->numDims, *dim = c->dim, m = productInt(d, dim), n = d*m, N=n+m;
+  StokesBoundaryMixed *mixed;
+  IS                   isG, isD;
+  PetscInt            *ixLP, *ixPL, *ixLV, *ixVL, *ixLD, *ixDL, *ixPG, *ixGP, *ixVG, *ixGV;
+  PetscInt             lp, lv, gp, gv, dv, g, im;
+  PetscReal           *v, *w, *x;
+  BdyType              type;
+  Vec                  uG, pL, pG, vL, vG, vD;
+  PetscErrorCode       ierr;
 
   PetscFunctionBegin;
   ierr = PetscMalloc6(m, PetscInt, &ixLP, m, PetscInt, &ixPL, n, PetscInt, &ixLV, n, PetscInt, &ixVL, n, PetscInt, &ixLD, n, PetscInt, &ixDL);CHKERRQ(ierr);
-  ierr = PetscMalloc4(m, PetscInt, &ixPG, N, PetscInt, &ixGP, n, PetscInt, &ixVG, N, PetscInt, &ixGV);CHKERRQ(ierr);
+  ierr = PetscMalloc5(m, PetscInt, &ixPG, N, PetscInt, &ixGP, n, PetscInt, &ixVG, N, PetscInt, &ixGV, m, StokesBoundaryMixed, &mixed);CHKERRQ(ierr);
   ierr = VecGetArray(c->coord, &x);CHKERRQ(ierr);    // Coordinates in a block-size d vector
   ierr = VecGetArray(c->workV[0], &v);CHKERRQ(ierr); // Some workspace for boundary values
-  lp=lv=gp=gv=dv=g=0;
+  lp=lv=gp=gv=dv=g=im=0;
   for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) {
-    PetscReal normal[d], normal2;
-    for (int j=0; j < d; j++) { // Compute normal vector
-      if      (it.ind[j] == 0)          { normal[j] = -1.0; }
-      else if (it.ind[j] == dim[j] - 1) { normal[j] = 1.0;  }
-      else                              { normal[j] = 0.0;  }
-    }
-    normal2 = dotScalar(d, normal, normal);
-    if (normal2 > 1e-5) { // We are on the boundary
-      for (int j=0; j < d; j++) normal[j] /= sqrt(normal2); // normalize n
+    PetscReal normal[d];
+    if (it.normal(normal)) { // On the boundary
       ierr = c->options->boundary(d, &x[it.i*d], normal, &type, &v[dv], c->options->boundaryCtx);CHKERRQ(ierr);
-      if (type == DIRICHLET) {
-        for (int k=0; k < d; k++) { // velocity in the local system comes from dirichlet values
-          ixLV[lv] = -1;                            // local dof is not in the global system
-          ixDL[dv] = lv; ixLD[lv] = dv; lv++; dv++; // 2-way mapping from local velocity to dirichlet
-        }
-      } else { SETERRQ(1, "Neumann not implemented."); }
-      ixLP[lp++] = -1; // local pressure is not represented in global pressure
+      switch (type) {
+        case DIRICHLET:
+          for (int k=0; k < d; k++) { // velocity in the local system comes from dirichlet values
+            ixLV[lv] = -1;                            // local dof is not in the global system
+            ixDL[dv] = lv; ixLD[lv] = dv; lv++; dv++; // 2-way mapping from local velocity to dirichlet
+          }
+          break;
+        case NEUMANN: // We keep all the mixed conditions together, grouped by node.
+          mixed[im].type       = NEUMANN;
+          mixed[im].localIndex = it.i;
+          mixed[im].alpha      = 0.0;
+          for (int k=0; k < d; k++) { mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k]; }
+          im++;
+          // Velocity is just like an interior point.  This loop is *copied* from below.
+          for (int k=0; k < d; k++) {
+            ixLV[lv] = gv; ixVL[gv] = lv; // two way map from local to global velocity
+            ixVG[gv] = g;  ixGV[g ] = gv; // two way map from global velocity to full global
+            ixGP[g] = -1;
+            ixLD[lv] = -1;
+            lv++; gv++; g++;
+          }
+          break;
+        default:
+          SETERRQ(1, "Boundary type not implemented.");
+      }
+      ixLP[lp++] = -1; // local pressure at the boundary is never represented in global pressure
     } else { // Interior
       for (int k=0; k < d; k++) {
         ixLV[lv] = gv; ixVL[gv] = lv; // two way map from local to global velocity
@@ -709,6 +741,11 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   }
   ierr = VecRestoreArray(c->coord, &x);CHKERRQ(ierr);
   ierr = VecRestoreArray(c->workV[0], &v);CHKERRQ(ierr);
+  c->numMixed = im;
+  if (im > 0) {
+    ierr = PetscMalloc(im*sizeof(StokesBoundaryMixed), &c->mixed);CHKERRQ(ierr);
+    ierr = PetscMemcpy(c->mixed, mixed, im);CHKERRQ(ierr);
+  }
   ierr = VecCreate(comm, &uG);CHKERRQ(ierr);   ierr = VecSetSizes(uG,  g, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(uG);CHKERRQ(ierr);
   ierr = VecCreate(comm, &pG);CHKERRQ(ierr);   ierr = VecSetSizes(pG, gp, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(pG);CHKERRQ(ierr);
   ierr = VecCreate(comm, &vG);CHKERRQ(ierr);   ierr = VecSetSizes(vG, gv, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(vG);CHKERRQ(ierr);
@@ -748,7 +785,7 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   ierr = VecScatterCreate(uG, c->isPG, pG, PETSC_NULL, &c->scatterGP);CHKERRQ(ierr);
   ierr = VecScatterCreate(uG, c->isVG, vG, PETSC_NULL, &c->scatterGV);CHKERRQ(ierr);
   ierr = PetscFree6(ixLP, ixPL, ixLV, ixVL, ixLD, ixDL);CHKERRQ(ierr);
-  ierr = PetscFree4(ixPG, ixGP, ixVG, ixGV);CHKERRQ(ierr);
+  ierr = PetscFree5(ixPG, ixGP, ixVG, ixGV, mixed);CHKERRQ(ierr);
   c->pG0 = pG; ierr = VecDuplicate(pG, &c->pG1);CHKERRQ(ierr);
   c->vG0 = vG; ierr = VecDuplicate(vG, &c->vG1);CHKERRQ(ierr);
   c->dirichlet = vD;
@@ -899,6 +936,54 @@ PetscErrorCode StokesPressureReduceOrder(Vec pL, StokesCtx *c)
 }
 
 #undef __FUNCT__
+#define __FUNCT__ "StokesMixedApply"
+PetscErrorCode StokesMixedApply(StokesCtx *c, Vec vL, Vec *stressL, Vec xL)
+{
+  const PetscInt d = c->numDims;
+  PetscReal *x, *v, **stress;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArray(vL, &v);CHKERRQ(ierr);
+  ierr = VecGetArray(xL, &x);CHKERRQ(ierr);
+  ierr = VecGetArrays(stressL, d, &stress);CHKERRQ(ierr);
+  for (int i=0; i < c->numMixed; i++) {
+    const PetscInt I = c->mixed[i].localIndex;
+    for (int j=0; j < d; j++) {
+      PetscReal z = 0.0;
+      for (int k=0; k < d; k++) {
+        z += stress[j][I*d+k] * c->mixed[i].normal[k];
+      }
+      x[I*d+j] = z + c->mixed[i].alpha * v[i*d+j];
+    }
+  }
+  ierr = VecGetArray(vL, &v);CHKERRQ(ierr);
+  ierr = VecGetArray(xL, &x);CHKERRQ(ierr);
+  ierr = VecGetArrays(stressL, d, &stress);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesMixedFilter"
+PetscErrorCode StokesMixedFilter(StokesCtx *c, Vec xL)
+{
+  const PetscInt d = c->numDims;
+  PetscReal *x;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArray(xL, &x);CHKERRQ(ierr);
+  for (int i=0; i < c->numMixed; i++) {
+    const PetscInt I = c->mixed[i].localIndex;
+    for (int j=0; j < d; j++) {
+      x[I*d+j] = 0.0;
+    }
+  }
+  ierr = VecRestoreArray(xL, &x);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp"
 PetscErrorCode StokesPCSetUp(void *void_ctx)
 {
@@ -1043,7 +1128,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
     ierr = StokesVecView(ctx->deta, nodes, 1, 1, view);CHKERRQ(ierr);
     {
       PetscReal **strain;
-      ierr = PetscViewerASCIIPrintf(view, "\nTENSORS stress double\n");CHKERRQ(ierr);
+      ierr = PetscViewerASCIIPrintf(view, "\nTENSORS strain double\n");CHKERRQ(ierr);
       ierr = VecGetArrays(ctx->strain, d, &strain);CHKERRQ(ierr);
       for (int i=0; i < nodes; i++) {
         for (int j=0; j < 3; j++) {
