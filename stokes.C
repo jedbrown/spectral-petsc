@@ -22,7 +22,7 @@ typedef struct {
 } StokesExactBoundaryCtx;
 
 typedef struct { // For higher dimensions, use a different value of `3'
-  PetscReal normal[3], value[3], alpha;
+  PetscReal normal[3], coord[3], value[3], alpha;
   BdyType   type;
   PetscInt  localIndex;
 } StokesBoundaryMixed;
@@ -134,17 +134,16 @@ int main(int argc,char **args)
   ierr = SNESCreate(comm, &snes);CHKERRQ(ierr);
   ierr = SNESSetApplicationContext(snes, ctx);CHKERRQ(ierr);
   ierr = SNESSetFunction(snes, r, StokesFunction, ctx);CHKERRQ(ierr);
-  ierr = SNESSetJacobian(snes, A, A, StokesJacobian, ctx);CHKERRQ(ierr);
-  ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
+  ierr = SNESSetJacobian(snes, A, P, StokesJacobian, ctx);CHKERRQ(ierr);
   ierr = SNESGetKSP(snes, &ksp);CHKERRQ(ierr);
-  //ierr = KSPSetType(ksp, KSPFGMRES);CHKERRQ(ierr);
   ierr = StokesRemoveConstantPressure(ksp, ctx, &nv, &ns);CHKERRQ(ierr);
+  ierr = KSPSetType(ksp, KSPFGMRES);CHKERRQ(ierr);
   ierr = KSPGetPC(ksp, &pc);CHKERRQ(ierr);
   ierr = PCSetType(pc, PCSHELL);CHKERRQ(ierr);
   ierr = PCShellSetContext(pc, ctx);CHKERRQ(ierr);
   ierr = PCShellSetSetUp(pc, StokesPCSetUp);CHKERRQ(ierr);
   ierr = PCShellSetApply(pc, StokesPCApply);CHKERRQ(ierr);
-  // Normally, we would also need a setup function, but this work will be done in StokesFunction
+  ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
 
   // u = exact solution, u2 = A(u) u (used as forcing term)
   ierr = StokesCreateExactSolution(snes, u, u2);CHKERRQ(ierr);
@@ -366,7 +365,8 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
     if (i > 0) { ierr = PetscPrintf(comm, ",");CHKERRQ(ierr); }
     ierr = PetscPrintf(comm, "%d", ctx->dim[i]);CHKERRQ(ierr);
   }
-  ierr = PetscPrintf(comm, "]\n  hardness = %f    exponent = %8f    regularization = %8f    gamma0 = %8f\n", opt->hardness, opt->exponent, opt->regularization, opt->gamma0);CHKERRQ(ierr);
+  ierr = PetscPrintf(comm, "]\n  hardness = %f    exponent = %8f    regularization = %8f    gamma0 = %8f\n",
+                     opt->hardness, opt->exponent, opt->regularization, opt->gamma0);CHKERRQ(ierr);
 
   switch (exact) {
     case 0:
@@ -710,7 +710,13 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
           mixed[im].type       = NEUMANN;
           mixed[im].localIndex = it.i;
           mixed[im].alpha      = 0.0;
-          for (int k=0; k < d; k++) { mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k]; }
+          for (int k=0; k < d; k++) { mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k]; mixed[im].coord[k] = x[it.i*d+k]; }
+          if (c->options->debug > 1) {
+            printf("boundary type neumann, localIndex = %d\n", mixed[im].localIndex);
+            ierr = PetscRealView(d, mixed[im].coord, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+            ierr = PetscRealView(d, mixed[im].normal, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+            ierr = PetscRealView(d, mixed[im].value, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+          }
           im++;
           // Velocity is just like an interior point.  This loop is *copied* from below.
           for (int k=0; k < d; k++) {
@@ -744,13 +750,13 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   c->numMixed = im;
   if (im > 0) {
     ierr = PetscMalloc(im*sizeof(StokesBoundaryMixed), &c->mixed);CHKERRQ(ierr);
-    ierr = PetscMemcpy(c->mixed, mixed, im);CHKERRQ(ierr);
+    ierr = PetscMemcpy(c->mixed, mixed, im*sizeof(StokesBoundaryMixed));CHKERRQ(ierr);
   }
   ierr = VecCreate(comm, &uG);CHKERRQ(ierr);   ierr = VecSetSizes(uG,  g, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(uG);CHKERRQ(ierr);
   ierr = VecCreate(comm, &pG);CHKERRQ(ierr);   ierr = VecSetSizes(pG, gp, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(pG);CHKERRQ(ierr);
   ierr = VecCreate(comm, &vG);CHKERRQ(ierr);   ierr = VecSetSizes(vG, gv, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(vG);CHKERRQ(ierr);
   ierr = VecCreate(comm, &vD);CHKERRQ(ierr);   ierr = VecSetSizes(vD, dv, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(vD);CHKERRQ(ierr);
-  ierr = PetscPrintf(comm, "DOF distribution: %d global   %d/%d pressure    %d/%d velocity    %d dirichlet\n", g, gp, lp, gv, lv, dv);CHKERRQ(ierr);
+  ierr = PetscPrintf(comm, "DOF distribution: %d global   %d/%d pressure    %d/%d velocity    %d dirichlet    %d mixed\n", g, gp, lp, gv, lv, dv, im);CHKERRQ(ierr);
   { // These index sets are needed to create the scatters, but may be needed when forming preconditioners, so we store them in StokesCtx.
     ierr = ISCreateGeneral(comm, lp, ixLP, &c->isLP);CHKERRQ(ierr);
     ierr = ISCreateGeneral(comm, gp, ixPL, &c->isPL);CHKERRQ(ierr);
@@ -826,6 +832,12 @@ PetscErrorCode StokesCreateExactSolution(SNES snes, Vec U, Vec U2)
     }
     p[i] = u[d];
     p2[i] = u2[d];
+  }
+  for (int i=0; i < c->numMixed; i++) {
+    for (int j=0; j < d; j++) {
+      const PetscInt I = c->mixed[i].localIndex;
+      v2[I*d+j] = c->mixed[i].value[j];
+    }
   }
   ierr = VecRestoreArray(c->workV[0], &v);CHKERRQ(ierr);
   ierr = VecRestoreArray(c->workV[1], &v2);CHKERRQ(ierr);
@@ -1001,28 +1013,53 @@ PetscErrorCode StokesPCSetUp(void *void_ctx)
   ierr = VecGetArray(ctx->coord, &x); CHKERRQ(ierr);
   ierr = ISGetIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
   {
-    PetscInt row, col[2*d+1], c;
+    PetscInt row, col[2*d+1], c, im=0;
     PetscScalar v[2*d+1];
     PetscScalar x0, xMM, xPP, xM, idxM, xP, idxP, idx, eM, deM, du0M, eP, deP, du0P;
     for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) { // loop over local dof
       const PetscInt i = it.i;
-      for (int f=0; f < d; f++) { // Each equation, corresponds to a row in the matrix
-        if (ixL[i*d+f] < 0) continue; // Not a global dof
-        row = ixL[i*d+f]; col[0] = row; v[0] = 0.0; c=1; // initialize diagonal term
-        for (int j=0; j < d; j++) { // each direction
-          const PetscInt iM = it.shift(j, -1);
-          const PetscInt iP = it.shift(j,  1);
-          if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
-          x0 = x[i*d+j]; xMM = x[iM*d+j]; xPP = x[iP*d+j];
-          xM = 0.5*(xMM+x0); idxM = 1.0/(x0-xMM); xP = 0.5*(x0+xPP); idxP = 1.0/(xPP-x0); idx = 1.0/(xP-xM);
-          eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]);
-          eP = 0.5*(eta[iP]+eta[i]); deP = 0.5*(deta[iP]+deta[i]);
-          //printf("eta %f %f %f\n", eta[iM], eta[i], eta[iP]);
-          col[c] = ixL[iM*d+f]; v[c] = -idx * (idxM * eM); c++;
-          col[c] = ixL[iP*d+f]; v[c] = -idx * (idxP * eP); c++;
-          v[0] += idx * (idxP * eP + idxM * eM);
+      if (im < ctx->numMixed && i == ctx->mixed[im].localIndex) { // we are at a mixed boundary node
+        // for (int f=0; f < d; f++) { // Just put 1 on the diagonal.  That is, don't enforce the boundary condition in the preconditioner.
+        //   row = ixL[i*d+f]; col[0] = row; v[0] = 1.0;
+        //   ierr = MatSetValues(ctx->MatVVPC, 1, &row, 1, col, v, INSERT_VALUES); CHKERRQ(ierr);
+        // }
+        for (int f=0; f < d; f++) {
+          PetscInt j=0, pm=0, z=0;
+          for (int k=0; k < d; k++) {
+            PetscReal tmp = ctx->mixed[im].normal[k];
+            if (PetscSqr(tmp) > z) {
+              z = tmp;
+              j = k;
+              pm = (tmp > 0) ? 1 : -1; // Chebyshev ordering
+            }
+          }
+          const PetscInt iM = it.shift(j, pm); // Step in the principle normal direction.
+          x0 = x[i*d+j]; xM = x[iM*d+j]; idx = 1.0 / (x0 - xM);
+          row = ixL[i*d+f]; col[0] = row; col[1] = ixL[iM*d+f];
+          v[0] = idx * eta[i];
+          v[1] = -idx * eta[i];
+          ierr = MatSetValues(ctx->MatVVPC, 1, &row, 2, col, v, INSERT_VALUES);CHKERRQ(ierr);
         }
-        ierr = MatSetValues(ctx->MatVVPC, 1, &row, c, col, v, INSERT_VALUES); CHKERRQ(ierr);
+        im++;
+      } else { // We are at an interior or Dirichlet node
+        for (int f=0; f < d; f++) { // Each equation, corresponds to a row in the matrix
+          if (ixL[i*d+f] < 0) continue; // Not a global dof
+          row = ixL[i*d+f]; col[0] = row; v[0] = 0.0; c=1; // initialize diagonal term
+          for (int j=0; j < d; j++) { // each direction
+            const PetscInt iM = it.shift(j, -1);
+            const PetscInt iP = it.shift(j,  1);
+            if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
+            x0 = x[i*d+j]; xMM = x[iM*d+j]; xPP = x[iP*d+j];
+            xM = 0.5*(xMM+x0); idxM = 1.0/(x0-xMM); xP = 0.5*(x0+xPP); idxP = 1.0/(xPP-x0); idx = 1.0/(xP-xM);
+            eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]);
+            eP = 0.5*(eta[iP]+eta[i]); deP = 0.5*(deta[iP]+deta[i]);
+            //printf("eta %f %f %f\n", eta[iM], eta[i], eta[iP]);
+            col[c] = ixL[iM*d+f]; v[c] = -idx * (idxM * eM); c++;
+            col[c] = ixL[iP*d+f]; v[c] = -idx * (idxP * eP); c++;
+            v[0] += idx * (idxP * eP + idxM * eM);
+          }
+          ierr = MatSetValues(ctx->MatVVPC, 1, &row, c, col, v, INSERT_VALUES); CHKERRQ(ierr);
+        }
       }
     }
   }
@@ -1305,19 +1342,29 @@ PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, 
 #define __FUNCT__ "StokesBoundary1"
 PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
 {
-  const PetscReal epsilon = 1e-6;
-  StokesExactBoundaryCtx *ctx = (StokesExactBoundaryCtx *)void_ctx;
-  PetscErrorCode ierr;
+  const PetscReal         epsilon = 1e-7;
+  StokesExactBoundaryCtx *ctx     = (StokesExactBoundaryCtx *)void_ctx;
+  bool                    inside;
+  PetscErrorCode          ierr;
 
   PetscFunctionBegin; InFunction;
-  if (coord[d-1] > 0.999) { // Impose condition at the 'surface'
+  inside = false;
+  for (int i=0; i < d-1; i++) inside |= (PetscAbs(coord[i]) < 0.999);
+  if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
     PetscReal x[d], v[d], w[d], vel[d][d];
     *type = NEUMANN;
     for (int i=0; i < d; i++) {
       ierr = ctx->exact(d, coord, v, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
       for (int j=0; j < d; j++) { x[j] = coord[j] + epsilon * ((i == j) ? 1 : 0); }
       ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
-      for (int j=0; j < d; j++) { vel[j][i] = (1.0 / epsilon) * (w[j] - v[j]); }
+      if (false) { // first order
+        for (int j=0; j < d; j++) { vel[j][i] = (1.0 / epsilon) * (w[j] - v[j]); }
+      } else { // second order
+        for (int j=0; j < d; j++) { vel[j][i] = (0.5 / epsilon) * w[j]; }
+        for (int j=0; j < d; j++) { x[j] = coord[j] - epsilon * ((i == j) ? 1 : 0); }
+        ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+        for (int j=0; j < d; j++) { vel[j][i] -= (0.5 / epsilon) * w[j]; }
+      }
     }
     for (int i=0; i < d; i++) { // multiply velocity gradient tensor with normal vector
       value[i] = 0.0;
