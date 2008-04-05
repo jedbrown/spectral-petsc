@@ -45,10 +45,10 @@ class BlockIt {
   }
   bool normal(PetscReal *n) const {
     PetscReal n2;
-    for (int j=0; j < d; j++) { // Compute normal vector
-      if      (ind[j] == 0)          { n[j] = -1.0; }
-      else if (ind[j] == dim[j] - 1) { n[j] =  1.0;  }
-      else                           { n[j] =  0.0;  }
+    for (int j=0; j < d; j++) { // Compute normal vector, it 'seems' backwards because of the Chebyshev ordering.
+      if      (ind[j] == 0)          { n[j] =  1.0; }
+      else if (ind[j] == dim[j] - 1) { n[j] = -1.0; }
+      else                           { n[j] =  0.0; }
     }
     n2 = dotScalar(d, n, n);
     if (n2 > 1e-10) {
