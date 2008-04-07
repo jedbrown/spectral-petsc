@@ -80,6 +80,7 @@ PetscErrorCode StokesRemoveConstantPressure(KSP, StokesCtx *, Vec *, MatNullSpac
 PetscErrorCode StokesPressureReduceOrder(Vec u, StokesCtx *c);
 PetscErrorCode StokesMixedApply(StokesCtx *, Vec vL, Vec *stressL, Vec xL);
 PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
+PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
 PetscErrorCode StokesPCApply(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp(void *);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
@@ -96,6 +97,7 @@ PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
 PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
+PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 
 #undef __FUNCT__
 #define __FUNCT__ "main"
@@ -343,7 +345,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   ctx->numDims = 10;
   ierr = PetscMalloc(ctx->numDims*sizeof(PetscInt), &ctx->dim);CHKERRQ(ierr);
   exact = 0; boundary = 0; rheology = 0;
-  opt->debug = 0; opt->hardness = 1.0; opt->exponent = 1.0; opt->regularization = 1.0; opt->gamma0 = 1.0; opt->cont0 = 1; opt->cont = 1;
+  opt->debug = 0; opt->hardness = 1.0; opt->exponent = 1.0; opt->regularization = 1.0; opt->gamma0 = 1.0; opt->cont0 = 0; opt->cont = 1;
   ierr = PetscOptionsBegin(comm, "", "Stokes problem options", "");CHKERRQ(ierr);
   ierr = PetscOptionsIntArray("-dim", "list of dimension extent", "stokes.C", ctx->dim, &ctx->numDims, &flag);CHKERRQ(ierr);
   if (!flag) { ctx->numDims = 2; ctx->dim[0] = 8; ctx->dim[1] = 6; }
@@ -384,6 +386,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
     case 3:
       opt->exact    = StokesExact3;
       opt->exactCtx = PETSC_NULL;
+      break;
     default:
       SETERRQ1(PETSC_ERR_SUP, "Exact solution %d not implemented", exact);
   }
@@ -396,6 +399,12 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       break;
     case 1:
       opt->boundary    = StokesBoundary1; // This condition evaluates and numerically differentiates the exact solution;
+      ierr = PetscMalloc(sizeof(StokesExactBoundaryCtx), &opt->boundaryCtx);CHKERRQ(ierr);
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exact = opt->exact;
+      ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exactCtx = opt->exactCtx;
+      break;
+    case 2:
+      opt->boundary    = StokesBoundary2; // This condition evaluates and numerically differentiates the exact solution;
       ierr = PetscMalloc(sizeof(StokesExactBoundaryCtx), &opt->boundaryCtx);CHKERRQ(ierr);
       ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exact = opt->exact;
       ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exactCtx = opt->exactCtx;
@@ -482,6 +491,7 @@ PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscTruth withDirichlet, Vec xG
   ierr = VecZeroEntries(ctx->workV[0]);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, xG, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterVL, xG, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesMixedVelocity(ctx, ctx->workV[0]);CHKERRQ(ierr);
   if (withDirichlet) {
     ierr = VecScatterBegin(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
     ierr = VecScatterEnd(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -542,6 +552,7 @@ PetscErrorCode StokesMatMultVV(Mat A, Vec xG, Vec yG) // Jacobian of viscous ter
   ierr = VecZeroEntries(xL);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterVL, xG, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesMixedVelocity(ctx, xL);CHKERRQ(ierr);
   for (int i=0; i < d; i++) { ierr = MatMult(ctx->DV[i], xL, V[i]);CHKERRQ(ierr); }
   // FIXME: Coordinate transformation
   ierr = VecGetArrays(V, d, &v);CHKERRQ(ierr);
@@ -600,6 +611,7 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
   ierr = VecScatterEnd(c->scatterGV, xG, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterVL, c->vG0, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterVL, c->vG0, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesMixedVelocity(c, xL);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterDL, c->dirichlet, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterDL, c->dirichlet, xL, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
 
@@ -710,9 +722,9 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
           mixed[im].type       = NEUMANN;
           mixed[im].localIndex = it.i;
           mixed[im].alpha      = 0.0;
-          for (int k=0; k < d; k++) { mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k]; mixed[im].coord[k] = x[it.i*d+k]; }
+          for (int k=0; k < d; k++) { mixed[im].coord[k] = x[it.i*d+k]; mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k]; }
           if (c->options->debug > 1) {
-            printf("boundary type neumann, localIndex = %d\n", mixed[im].localIndex);
+            printf("boundary type NEUMANN, localIndex = %d\n", mixed[im].localIndex);
             ierr = PetscRealView(d, mixed[im].coord, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
             ierr = PetscRealView(d, mixed[im].normal, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
             ierr = PetscRealView(d, mixed[im].value, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
@@ -725,6 +737,36 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
             ixGP[g] = -1;
             ixLD[lv] = -1;
             lv++; gv++; g++;
+          }
+          break;
+        case MIXED:
+          // The boundary function returns the sliding coefficient in the first element of 'value' and the extra traction in the next 'd' entries.
+          mixed[im].type       = MIXED;
+          mixed[im].localIndex = it.i;
+          mixed[im].alpha      = v[dv];
+          for (int k=0; k < d; k++)   { mixed[im].coord[k] = x[it.i*d+k]; mixed[im].normal[k] = normal[k]; mixed[im].value[k] = v[dv+k+1]; }
+          if (c->options->debug > 1) {
+            printf("boundary type MIXED, localIndex = %d, alpha = %8g\n", mixed[im].localIndex, mixed[im].alpha);
+            ierr = PetscRealView(d, mixed[im].coord, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+            ierr = PetscRealView(d, mixed[im].normal, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+            ierr = PetscRealView(d, mixed[im].value, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+          }
+          im++;
+          { // The velocity component 'most in the normal direction' is removed from the system, the rest are treated as usual
+            const PetscInt in = indexMaxAbs(d, normal);
+            for (int k=0; k < d; k++) {
+              if (k == in) { // component is not in global system
+                ixLV[lv] = -1;
+                ixLD[lv] = -1;
+                lv++;
+              } else { // component is in global system
+                ixLV[lv] = gv; ixVL[gv] = lv; // two way map from local to global velocity
+                ixVG[gv] = g;  ixGV[g ] = gv; // two way map from global velocity to full global
+                ixGP[g] = -1;
+                ixLD[lv] = -1;
+                lv++; gv++; g++;
+              }
+            }
           }
           break;
         default:
@@ -896,9 +938,9 @@ PetscErrorCode StokesRemoveConstantPressure(KSP ksp, StokesCtx *ctx, Vec *X, Mat
 #define __FUNCT__ "StokesPressureReduceOrder"
 PetscErrorCode StokesPressureReduceOrder(Vec pL, StokesCtx *c)
 {
-  PetscInt d = c->numDims, *dim = c->dim, m, n, p, mnp;
-  PetscReal *pres, *coord, *work, *x;
-  PetscErrorCode ierr;
+  PetscInt        d = c->numDims, *dim = c->dim, m, n, p, mnp;
+  PetscReal      *pres, *coord, *work, *x;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   if (d > 3) SETERRQ1(1, "Not implemented for dimension %d\n", d);
@@ -951,9 +993,9 @@ PetscErrorCode StokesPressureReduceOrder(Vec pL, StokesCtx *c)
 #define __FUNCT__ "StokesMixedApply"
 PetscErrorCode StokesMixedApply(StokesCtx *c, Vec vL, Vec *stressL, Vec xL)
 {
-  const PetscInt d = c->numDims;
-  PetscReal *x, *v, **stress;
-  PetscErrorCode ierr;
+  const PetscInt  d = c->numDims;
+  PetscReal      *x, *v, **stress;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetArray(vL, &v);CHKERRQ(ierr);
@@ -979,9 +1021,9 @@ PetscErrorCode StokesMixedApply(StokesCtx *c, Vec vL, Vec *stressL, Vec xL)
 #define __FUNCT__ "StokesMixedFilter"
 PetscErrorCode StokesMixedFilter(StokesCtx *c, Vec xL)
 {
-  const PetscInt d = c->numDims;
-  PetscReal *x;
-  PetscErrorCode ierr;
+  const PetscInt  d = c->numDims;
+  PetscReal      *x;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetArray(xL, &x);CHKERRQ(ierr);
@@ -992,6 +1034,32 @@ PetscErrorCode StokesMixedFilter(StokesCtx *c, Vec xL)
     }
   }
   ierr = VecRestoreArray(xL, &x);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesMixedVelocity"
+// With MIXED boundary, the component 'most parallel to the normal' is removed
+// from the global system.  This function recovers that value so that there is
+// no flux through the boundary.
+PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL)
+{
+  const PetscInt  d = c->numDims;
+  PetscReal      *v;
+  PetscErrorCode  ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArray(vL, &v);CHKERRQ(ierr);
+  for (int i=0; i < c->numMixed; i++) {
+    if (c->mixed[i].type == MIXED) {
+      const PetscReal *normal = c->mixed[i].normal;
+      const PetscInt in = indexMaxAbs(d, normal);
+      PetscReal *vel = &v[i*d];
+      vel[in] = 0.0;
+      v[i*d+in] = -dotScalar(d, vel, normal) / normal[in];
+    }
+  }
+  ierr = VecRestoreArray(vL, &v);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1024,20 +1092,26 @@ PetscErrorCode StokesPCSetUp(void *void_ctx)
         //   ierr = MatSetValues(ctx->MatVVPC, 1, &row, 1, col, v, INSERT_VALUES); CHKERRQ(ierr);
         // }
         for (int f=0; f < d; f++) {
-          PetscInt j=0, pm=0, z=0;
-          for (int k=0; k < d; k++) {
-            PetscReal tmp = ctx->mixed[im].normal[k];
-            if (PetscSqr(tmp) > z) {
-              z = tmp;
-              j = k;
-              pm = (tmp > 0) ? 1 : -1; // Chebyshev ordering
-            }
-          }
+          //PetscInt j=0, pm=0, z=0;
+          // for (int k=0; k < d; k++) {
+          //   PetscReal tmp = ctx->mixed[im].normal[k];
+          //   if (PetscSqr(tmp) > z) {
+          //     z = tmp;
+          //     j = k;
+          //     pm = (tmp > 0) ? 1 : -1; // Chebyshev ordering
+          //   }
+          // }
+          const PetscReal *normal = ctx->mixed[im].normal;
+          const PetscInt j = indexMaxAbs(d, ctx->mixed[im].normal);
+          const PetscInt pm = (normal[j] > 0) ? 1 : -1;
           const PetscInt iM = it.shift(j, pm); // Step in the principle normal direction.
           x0 = x[i*d+j]; xM = x[iM*d+j]; idx = 1.0 / (x0 - xM);
           row = ixL[i*d+f]; col[0] = row; col[1] = ixL[iM*d+f];
           v[0] = idx * eta[i];
           v[1] = -idx * eta[i];
+          if (ctx->mixed[im].type == MIXED) {
+            v[0] += ctx->mixed[im].alpha;
+          }
           ierr = MatSetValues(ctx->MatVVPC, 1, &row, 2, col, v, INSERT_VALUES);CHKERRQ(ierr);
         }
         im++;
@@ -1124,6 +1198,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
   ierr = VecScatterEnd(ctx->scatterPL, ctx->pG0, ctx->workP[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, ctx->vG0, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterVL, ctx->vG0, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesMixedVelocity(ctx, ctx->workV[0]);CHKERRQ(ierr);
   ierr = StokesPressureReduceOrder(ctx->workP[0], ctx);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterDL, ctx->dirichlet, ctx->workV[0], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -1136,6 +1211,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
   ierr = VecScatterEnd(ctx->scatterPL, ctx->pG1, ctx->workP[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterVL, ctx->vG1, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterVL, ctx->vG1, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = StokesMixedVelocity(ctx, ctx->workV[1]);CHKERRQ(ierr);
   ierr = StokesPressureReduceOrder(ctx->workP[1], ctx);CHKERRQ(ierr);
   ierr = VecScatterBegin(ctx->scatterDL, ctx->dirichlet, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(ctx->scatterDL, ctx->dirichlet, ctx->workV[1], INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -1310,15 +1386,15 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 
   PetscFunctionBegin; InFunction;
   if (d != 2) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
-  u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
-  v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
+  u = coord[1] + 1.0;
+  v = 0.0;
   p = 0.0;
   if (value) {
     value[0] = u; value[1] = v; value[2] = p;
   }
   if (rhs) {
-    rhs[0]   = PetscSqr(0.5 * PETSC_PI) * eta * u;
-    rhs[1]   = PetscSqr(0.5 * PETSC_PI) * eta * v;
+    rhs[0]   = 0.0;
+    rhs[1]   = 0.0;
     rhs[2]   = 0.0;
   }
   PetscFunctionReturn(0);
@@ -1359,7 +1435,7 @@ PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, 
       ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
       if (false) { // first order
         for (int j=0; j < d; j++) { vel[j][i] = (1.0 / epsilon) * (w[j] - v[j]); }
-      } else { // second order
+      } else { // centered difference
         for (int j=0; j < d; j++) { vel[j][i] = (0.5 / epsilon) * w[j]; }
         for (int j=0; j < d; j++) { x[j] = coord[j] - epsilon * ((i == j) ? 1 : 0); }
         ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
@@ -1372,6 +1448,51 @@ PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, 
         value[i] += 0.5 * (vel[j][i] + vel[i][j]) * normal[j];
       }
     }
+  } else { // Simply impose dirichlet conditions
+    *type = DIRICHLET;
+    ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesBoundary2"
+PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
+{
+  const PetscReal         epsilon = 1e-7;
+  StokesExactBoundaryCtx *ctx     = (StokesExactBoundaryCtx *)void_ctx;
+  bool                    inside;
+  PetscErrorCode          ierr;
+
+  PetscFunctionBegin; InFunction;
+  inside = false;
+  for (int i=0; i < d-1; i++) inside |= (PetscAbs(coord[i]) < 0.999);
+  if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
+    PetscReal x[d], v[d], w[d], vel[d][d];
+    *type = NEUMANN;
+    for (int i=0; i < d; i++) {
+      ierr = ctx->exact(d, coord, v, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+      for (int j=0; j < d; j++) { x[j] = coord[j] + epsilon * ((i == j) ? 1 : 0); }
+      ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+      if (false) { // first order
+        for (int j=0; j < d; j++) { vel[j][i] = (1.0 / epsilon) * (w[j] - v[j]); }
+      } else { // centered difference
+        for (int j=0; j < d; j++) { vel[j][i] = (0.5 / epsilon) * w[j]; }
+        for (int j=0; j < d; j++) { x[j] = coord[j] - epsilon * ((i == j) ? 1 : 0); }
+        ierr = ctx->exact(d, x, w, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+        for (int j=0; j < d; j++) { vel[j][i] -= (0.5 / epsilon) * w[j]; }
+      }
+    }
+    for (int i=0; i < d; i++) { // multiply velocity gradient tensor with normal vector
+      value[i] = 0.0;
+      for (int j=0; j < d; j++) {
+        value[i] += 0.5 * (vel[j][i] + vel[i][j]) * normal[j];
+      }
+    }
+  } else if (coord[d-1] < -0.999) { // Impose mixed condition at the bed
+    *type = MIXED;
+    value[0] = 1.0; // alpha
+    for (int i=0; i < d; i++) { value[1+i] = 0.0; } // Zero flux through boundary
   } else { // Simply impose dirichlet conditions
     *type = DIRICHLET;
     ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);

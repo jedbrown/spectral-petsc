@@ -3,7 +3,7 @@
 #include <petscvec.h>
 #endif
 
-PetscScalar dotScalar(PetscInt d, PetscScalar x[], PetscScalar y[]);
+PetscScalar dotScalar(PetscInt d, const PetscScalar x[], const PetscScalar y[]);
 
 class BlockIt {
   public:
@@ -62,7 +62,7 @@ class BlockIt {
   int d, *dim, *stride;
 };
 
-PetscScalar dotScalar(PetscInt d, PetscScalar x[], PetscScalar y[]) {
+PetscScalar dotScalar(PetscInt d, const PetscScalar x[], const PetscScalar y[]) {
   PetscScalar dot = 0.0;
   for (PetscInt i=0; i<d; i++) {
     dot += x[i] * y[i];
@@ -70,13 +70,26 @@ PetscScalar dotScalar(PetscInt d, PetscScalar x[], PetscScalar y[]) {
   return dot;
 }
 
-int sumInt(int d, int dim[]) {
+PetscInt indexMaxAbs(PetscInt d, const PetscScalar x[]) {
+  PetscInt j=0;
+  PetscReal max=0.0;
+  for (int i=0; i < d; i++) {
+    const PetscReal tmp = PetscAbs(x[i]);
+    if (max < tmp) {
+      max = tmp;
+      j = i;
+    }
+  }
+  return j;
+}
+
+int sumInt(int d, const int dim[]) {
   int z = 0;
   for (int i=0; i<d; i++) z += dim[i];
   return z;
 }
 
-int productInt(int d, int dim[]) {
+int productInt(int d, const int dim[]) {
   int z = 1;
   for (int i=0; i<d; i++) z *= dim[i];
   return z;
