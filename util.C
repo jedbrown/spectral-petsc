@@ -7,7 +7,7 @@ PetscScalar dotScalar(PetscInt d, const PetscScalar x[], const PetscScalar y[]);
 
 class BlockIt {
   public:
-  BlockIt(int d, int *dim) : d(d) {
+  BlockIt(int d, const int *dim) : d(d) {
     int s=1;
     this->dim = new int[d]; stride = new int[d]; ind = new int[d];
     for (int j=d-1; j>=0; j--) {
@@ -42,6 +42,15 @@ class BlockIt {
     const int is = ind[j] + s;
     if (is < 0 || is >= dim[j]) return -1;
     return i + s * stride[j];
+  }
+  int plus(int *offset) const {
+    int I = 0;
+    for (int j=d-1; j >= 0; j--) {
+      const PetscInt k = ind[j] + offset[j];
+      if (k < 0 || k >= dim[j]) return -1;
+      I += k * stride[j];
+    }
+    return I;
   }
   bool normal(PetscReal *n) const {
     PetscReal n2;

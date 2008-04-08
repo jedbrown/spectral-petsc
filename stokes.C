@@ -83,6 +83,7 @@ PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
 PetscErrorCode StokesPCApply(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp(void *);
+PetscErrorCode StokesPCSetUp1(void *);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesVelocityMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename);
@@ -143,7 +144,10 @@ int main(int argc,char **args)
   ierr = KSPGetPC(ksp, &pc);CHKERRQ(ierr);
   ierr = PCSetType(pc, PCSHELL);CHKERRQ(ierr);
   ierr = PCShellSetContext(pc, ctx);CHKERRQ(ierr);
-  ierr = PCShellSetSetUp(pc, StokesPCSetUp);CHKERRQ(ierr);
+  {
+    ierr = PetscOptionsHasName(PETSC_NULL, "-prefd", &flag);CHKERRQ(ierr);
+    ierr = PCShellSetSetUp(pc, flag ? StokesPCSetUp : StokesPCSetUp1);CHKERRQ(ierr);
+  }
   ierr = PCShellSetApply(pc, StokesPCApply);CHKERRQ(ierr);
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
 
@@ -243,7 +247,8 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     ierr = VecGetArray(c->coord, &x);CHKERRQ(ierr);
     for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) {
       for (int j=0; j < d; j++) {
-        x[it.i*d+j] = cos(it.ind[j] * PETSC_PI / (dim[j] - 1));
+        x[it.i*d+j] = cos(it.ind[j] * PETSC_PI / (dim[j] - 1)); // Chebyshev spacing
+        //x[it.i*d+j] = 1 - 2.0 * it.ind[j] / (dim[j] - 1); // linear spacing
       }
     }
     ierr = VecRestoreArray(c->coord, &x);CHKERRQ(ierr);
@@ -1148,9 +1153,129 @@ PetscErrorCode StokesPCSetUp(void *void_ctx)
   ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCSetUp1"
+PetscErrorCode StokesPCSetUp1(void *void_ctx)
+{
+  const PetscReal qpoint[2]   = { -0.57735026918962573, 0.57735026918962573 };
+  const PetscReal qweight[2]  = { 1.0, 1.0 };
+  const PetscReal basis[2][2] = {{0.78867513459481287, 0.21132486540518708}, {0.21132486540518708, 0.78867513459481287}};
+  const PetscReal deriv[2][2] = {{-0.5, -0.5}, {0.5, 0.5}};
+  const PetscInt qdim[]       = { 2, 2, 2, 2, 2 }; // 2 quadrature points in each direction
+  const PetscInt ndim[]       = { 2, 2, 2, 2, 2 }; // 2 nodes in each direction within each element
+  StokesCtx      *ctx         = (StokesCtx *)void_ctx;
+  const PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d, ndim);
+  PetscReal      *x, *eta, *deta, **strain;
+  PetscInt       *ixL;
+  PetscInt row[N*d], col[N*d];
+  PetscReal A[N*d][N*d];
+  PetscTruth      flg;
+  PetscErrorCode  ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->deta, &deta); CHKERRQ(ierr);
+  ierr = VecGetArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISGetIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+  ierr = MatZeroEntries(ctx->MatVVPC);CHKERRQ(ierr);
+  for (BlockIt el = BlockIt(d, dim); !el.done; el.next()) { // loop over elements
+    bool skip = false;
+    for (int i=0; i < d; i++) { if (el.ind[i] == dim[i]-1) { skip = true; } }
+    if (skip) continue;
+    // compute element jacobian at quadrature points
+    PetscReal J[d][d], Jinv[d][d], Jdet;
+    for (int i=0; i < d; i++) { // direction in reference cell
+      const PetscInt iP = el.shift(i, 1);
+      for (int j=0; j < d; j++) { // derivative direction
+        J[i][j] = 0.5 * (x[iP*d+j] - x[el.i*d+j]);
+      }
+    }
+    {
+      if (d != 2) SETERRQ1(1, "Jacobian inverse not implemented for dimension %d", d);
+      Jdet = J[0][0] * J[1][1] - J[0][1] * J[1][0];
+      const PetscReal iJdet = 1.0 / Jdet;
+      Jinv[0][0] =  iJdet * J[1][1];     Jinv[0][1] = -iJdet * J[0][1];
+      Jinv[1][0] = -iJdet * J[1][0];     Jinv[1][1] =  iJdet * J[0][0];
+    }
+    ierr = PetscMemzero(row, N*d*sizeof(PetscInt));CHKERRQ(ierr);
+    ierr = PetscMemzero(col, N*d*sizeof(PetscInt));CHKERRQ(ierr);
+    ierr = PetscMemzero(A, PetscSqr(N*d)*sizeof(PetscReal));CHKERRQ(ierr);
+    for (BlockIt quad = BlockIt(d, qdim); !quad.done; quad.next()) {
+      PetscReal qw = Jdet;
+      for (int i=0; i < d; i++) qw *= qweight[quad.ind[i]];
+      for (BlockIt test = BlockIt(d, ndim); !test.done; test.next()) {
+        for (int a=0; a < d; a++) { // test function component
+          row[test.i*d+a] = ixL[el.plus(test.ind)*d+a];
+          for (BlockIt trial = BlockIt(d, ndim); !trial.done; trial.next()) {
+            for (int b=0; b < d; b++) { // trial function component
+              col[trial.i*d+b] = ixL[el.plus(trial.ind)*d+b];
+              PetscReal D[d][d], E[d][d], dtest[d], dtrial[d];
+              ierr = PetscMemzero(D, d*d*sizeof(PetscReal));CHKERRQ(ierr);
+              ierr = PetscMemzero(E, d*d*sizeof(PetscReal));CHKERRQ(ierr);
+              ierr = PetscMemzero(dtest, d*sizeof(PetscReal));CHKERRQ(ierr);
+              ierr = PetscMemzero(dtrial, d*sizeof(PetscReal));CHKERRQ(ierr);
+              for (int i=0; i < d; i++) { // real derivative direction
+                for (int j=0; j < d; j++) { // reference derivative direction
+                  PetscReal ztest=1.0, ztrial=1.0;
+                  for (int k=0; k < d; k++) { // tensor product direction
+                    if (j == k) {
+                      ztest  *= deriv[ test.ind[j]][quad.ind[j]] * Jinv[j][i];
+                      ztrial *= deriv[trial.ind[j]][quad.ind[j]] * Jinv[j][i];
+                    } else {
+                      ztest  *= basis[ test.ind[k]][quad.ind[k]];
+                      ztrial *= basis[trial.ind[k]][quad.ind[k]];
+                    }
+                  }
+                  dtest[i] += ztest;
+                  dtrial[i] += ztrial;
+                }
+              }
+              for (int i=0; i < d; i++) { // derivative direction
+                E[a][i] += 0.5 * dtest[i];
+                E[i][a] += 0.5 * dtest[i];
+                D[b][i] += 0.5 * dtrial[i];
+                D[i][b] += 0.5 * dtrial[i];
+              }
+              PetscReal z=0.0, zhat=0.0, zz=0.0;
+              for (int i=0; i < d; i++) {
+                for (int j=0; j < d; j++) {
+                  z    += E[i][j] * D[i][j];
+                  zhat += E[i][j] * strain[j][el.i*d+i];
+                  zz   += D[i][j] * strain[j][el.i*d+i];
+                }
+              }
+              if (false) {
+                z = 0.0;
+                for (int i=0; i < d; i++) z += dtest[i] * dtrial[i];
+                //z = dtest[0] * dtrial[0];
+              }
+              A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
+            }
+          }
+        }
+      }
+    }
+    ierr = MatSetValues(ctx->MatVVPC, d*N, row, d*N, col, &A[0][0], ADD_VALUES);CHKERRQ(ierr);
+  }
+  ierr = VecRestoreArray(ctx->eta, &eta); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->deta, &deta); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISRestoreIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+
+  ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCApply"
