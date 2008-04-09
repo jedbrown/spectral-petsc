@@ -1181,7 +1181,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   PetscReal      *x, *eta, *deta, **strain;
   PetscInt       *ixL;
   PetscInt row[N*d], col[N*d];
-  PetscReal A[N*d][N*d];
+  PetscReal A[N*d][N*d], M[N*d][N*d];
   PetscTruth      flg;
   PetscErrorCode  ierr;
 
@@ -1214,10 +1214,13 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
     ierr = PetscMemzero(row, N*d*sizeof(PetscInt));CHKERRQ(ierr);
     ierr = PetscMemzero(col, N*d*sizeof(PetscInt));CHKERRQ(ierr);
     ierr = PetscMemzero(A, PetscSqr(N*d)*sizeof(PetscReal));CHKERRQ(ierr);
+    ierr = PetscMemzero(M, PetscSqr(N*d)*sizeof(PetscReal));CHKERRQ(ierr);
     for (BlockIt quad = BlockIt(d, qdim); !quad.done; quad.next()) {
-      PetscReal qw = Jdet; qw = 1.0;
-      // The finite element formulation needs the Jacobian determinant here, but the preconditioner is stronger when we just use a constant.
-      // Presumably this is due to the collocation nature of the spectral method.  A better approach would be to solve A x = M^-1 b.
+      PetscReal qw = Jdet; //qw = 1.0;
+      // The finite element formulation needs the Jacobian determinant here, but the preconditioner is stronger when we
+      // just use a constant.  Presumably this is due to the collocation nature of the spectral method.  Alternatively,
+      // we can invert the mass matrix which corrects the scaling.  However, lumping the mass matrix seems to be
+      // equivalent to just ignoring the determinant here.
       for (int i=0; i < d; i++) qw *= qweight[quad.ind[i]];
       for (BlockIt test = BlockIt(d, ndim); !test.done; test.next()) {
         for (int a=0; a < d; a++) { // test function component
@@ -1270,6 +1273,11 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
               } else { // The full system
                 A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
               }
+              PetscReal zmass = 1.0;
+              for (int i=0; i < d; i++) { // tensor product direction
+                zmass *= basis[ test.ind[i]][quad.ind[i]] * basis[trial.ind[i]][quad.ind[i]];
+              }
+              M[test.i*d+a][trial.i*d+b] += zmass * qw;
             }
           }
         }
@@ -1311,6 +1319,15 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
         }
         I++;
         printf("\n");
+      }
+    }
+    for (int i=0; i < N*d && true; i++) { // lump the element mass matrix
+      PetscReal lump = 0.0;
+      for (int j=0; j < N*d; j++) {
+        lump += M[i][j];
+      }
+      for (int j=0; j < N*d; j++) {
+        A[j][i] /= lump;
       }
     }
     ierr = MatSetValues(ctx->MatVVPC, d*N, row, d*N, col, &A[0][0], ADD_VALUES);CHKERRQ(ierr);
