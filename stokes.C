@@ -1161,12 +1161,21 @@ PetscErrorCode StokesPCSetUp(void *void_ctx)
 #define __FUNCT__ "StokesPCSetUp1"
 PetscErrorCode StokesPCSetUp1(void *void_ctx)
 {
+#define ORDER 3
+#if (ORDER == 2)
   const PetscReal qpoint[2]   = { -0.57735026918962573, 0.57735026918962573 };
   const PetscReal qweight[2]  = { 1.0, 1.0 };
   const PetscReal basis[2][2] = {{0.78867513459481287, 0.21132486540518708}, {0.21132486540518708, 0.78867513459481287}};
   const PetscReal deriv[2][2] = {{-0.5, -0.5}, {0.5, 0.5}};
-  const PetscInt qdim[]       = { 2, 2, 2, 2, 2 }; // 2 quadrature points in each direction
-  const PetscInt ndim[]       = { 2, 2, 2, 2, 2 }; // 2 nodes in each direction within each element
+  const PetscInt  qdim[]      = {2,2,2,2,2}; // 2 quadrature points in each direction
+#elif (ORDER == 3)
+  const PetscReal qpoint[3]   = {-0.7745966692414834, -2.4651903288156619e-31, 0.7745966692414834};
+  const PetscReal qweight[3]  = {0.55555555555556, 0.88888888888889, 0.55555555555556};
+  const PetscReal basis[2][3] = {{0.887298334621,0.5,0.112701665379},{0.112701665379,0.5,0.887298334621}};
+  const PetscReal deriv[2][3] = {{-0.5, -0.5, -0.5},{0.5, 0.5, 0.5}};
+  const PetscInt  qdim[]      = {3,3,3,3,3};
+#endif
+  const PetscInt ndim[]       = {2,2,2,2,2}; // 2 nodes in each direction within each element
   StokesCtx      *ctx         = (StokesCtx *)void_ctx;
   const PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d, ndim);
   PetscReal      *x, *eta, *deta, **strain;
@@ -1206,7 +1215,9 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
     ierr = PetscMemzero(col, N*d*sizeof(PetscInt));CHKERRQ(ierr);
     ierr = PetscMemzero(A, PetscSqr(N*d)*sizeof(PetscReal));CHKERRQ(ierr);
     for (BlockIt quad = BlockIt(d, qdim); !quad.done; quad.next()) {
-      PetscReal qw = Jdet;
+      PetscReal qw = Jdet; qw = 1.0;
+      // The finite element formulation needs the Jacobian determinant here, but the preconditioner is stronger when we just use a constant.
+      // Presumably this is due to the collocation nature of the spectral method.  A better approach would be to solve A x = M^-1 b.
       for (int i=0; i < d; i++) qw *= qweight[quad.ind[i]];
       for (BlockIt test = BlockIt(d, ndim); !test.done; test.next()) {
         for (int a=0; a < d; a++) { // test function component
@@ -1249,18 +1260,65 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
                   zz   += D[i][j] * strain[j][el.i*d+i];
                 }
               }
-              if (false) {
+              if (false) { // Just the laplacian
                 z = 0.0;
-                for (int i=0; i < d; i++) z += dtest[i] * dtrial[i];
-                //z = dtest[0] * dtrial[0];
+                if (a == b) {
+                  for (int i=0; i < d; i++) z += dtest[i] * dtrial[i];
+                  //z += dtest[0] * dtrial[0];
+                }
+                A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
+              } else { // The full system
+                A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
               }
-              A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
             }
           }
         }
       }
     }
+    if (ctx->options->debug > 0) { // element matrix diagnostics
+      PetscInt m=0, n=0;
+      for (int i=0; i < d*N; i++) {
+        if (row[i] >= 0) m++;
+        if (col[i] >= 0) n++;
+      }
+      PetscReal Arelevant[m][n];
+      ierr = PetscMemzero(Arelevant, m*n*sizeof(PetscReal));CHKERRQ(ierr);
+      PetscInt I=0, J=0;
+      for (int i=0; i < d*N; i++) {
+        if (row[i] < 0) continue;
+        J = 0;
+        for (int j=0; j < d*N; j++) {
+          if (col[j] < 0) continue;
+          Arelevant[I][J] = A[i][j];
+          J++;
+        }
+        I++;
+      }
+      printf("element %d,%d: col =", el.ind[0], el.ind[1]);
+      for (int j=0; j < d*N; j++) {
+        if (col[j] >= 0) { printf("%5d", col[j]); }
+      }
+      printf("\n");
+      I = 0;
+      for (int i=0; i < d*N; i++) {
+        if (row[i] < 0) continue;
+        printf("[%2d] ", row[i]);
+        J=0;
+        for (int j=0; j < d*N; j++) {
+          if (col[j] < 0) continue;
+          printf("%10.7f ", Arelevant[I][J]);
+          J++;
+        }
+        I++;
+        printf("\n");
+      }
+    }
     ierr = MatSetValues(ctx->MatVVPC, d*N, row, d*N, col, &A[0][0], ADD_VALUES);CHKERRQ(ierr);
+    if (ctx->options->debug > 1) {
+      ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+      ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+      ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+    }
   }
   ierr = VecRestoreArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->deta, &deta); CHKERRQ(ierr);
