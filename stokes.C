@@ -53,6 +53,7 @@ typedef struct {
   Vec            dirichlet;     // special dirichlet format (velocity only, pressure does not have boundary conditions)
   Vec            force;         // Global body force vector, velocity only
   Vec            pG0, pG1, vG0, vG1; // global pressure and velocity vectors
+  Vec            massLump;
   IS             isLP, isPL, isLV, isVL, isLD, isDL, isPG, isGP, isVG, isGV; // perhaps useful for building preconditioner
   VecScatter     scatterLP, scatterPL; // pressure local <-> pressure global
   VecScatter     scatterLV, scatterVL; // velocity local <-> global
@@ -266,6 +267,7 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     PC pc;
     ierr = VecGetSize(c->pG0, &m);CHKERRQ(ierr);
     ierr = VecGetSize(c->vG0, &n);CHKERRQ(ierr);
+    ierr = VecDuplicate(c->vG0, &c->massLump);CHKERRQ(ierr);
     ierr = MatCreateShell(comm, m, m, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatSchur);CHKERRQ(ierr);
     ierr = MatShellSetOperation(c->MatSchur, MATOP_MULT, (void(*)(void))StokesMatMultSchur);CHKERRQ(ierr);
     ierr = MatCreateShell(comm, m, n, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatPV);CHKERRQ(ierr);
@@ -318,6 +320,7 @@ PetscErrorCode StokesDestroy (StokesCtx *c)
   ierr = VecDestroy(c->force);CHKERRQ(ierr);
   ierr = VecDestroy(c->pG0);CHKERRQ(ierr);                    ierr = VecDestroy(c->pG1);CHKERRQ(ierr);
   ierr = VecDestroy(c->vG0);CHKERRQ(ierr);                    ierr = VecDestroy(c->vG1);CHKERRQ(ierr);
+  ierr = VecDestroy(c->massLump);CHKERRQ(ierr);
   ierr = ISDestroy(c->isLP);CHKERRQ(ierr);                    ierr = ISDestroy(c->isPL);CHKERRQ(ierr);
   ierr = ISDestroy(c->isLV);CHKERRQ(ierr);                    ierr = ISDestroy(c->isVL);CHKERRQ(ierr);
   ierr = ISDestroy(c->isLD);CHKERRQ(ierr);                    ierr = ISDestroy(c->isDL);CHKERRQ(ierr);
@@ -1178,7 +1181,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   const PetscInt ndim[]       = {2,2,2,2,2}; // 2 nodes in each direction within each element
   StokesCtx      *ctx         = (StokesCtx *)void_ctx;
   const PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d, ndim);
-  PetscReal      *x, *eta, *deta, **strain;
+  PetscReal      *x, *eta, *deta, **strain, *lump;
   PetscInt       *ixL;
   PetscInt row[N*d], col[N*d];
   PetscReal A[N*d][N*d], M[N*d][N*d];
@@ -1186,6 +1189,8 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
+  ierr = VecZeroEntries(ctx->massLump);CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->massLump, &lump);CHKERRQ(ierr);
   ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(ctx->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
@@ -1322,12 +1327,10 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
       }
     }
     for (int i=0; i < N*d && true; i++) { // lump the element mass matrix
-      PetscReal lump = 0.0;
+      if (row[i] < 0) continue;
       for (int j=0; j < N*d; j++) {
-        lump += M[i][j];
-      }
-      for (int j=0; j < N*d; j++) {
-        A[j][i] /= lump;
+        if (col[j] < 0) continue;
+        lump[row[i]] += M[i][j];
       }
     }
     ierr = MatSetValues(ctx->MatVVPC, d*N, row, d*N, col, &A[0][0], ADD_VALUES);CHKERRQ(ierr);
@@ -1337,6 +1340,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
       ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
     }
   }
+  ierr = VecRestoreArray(ctx->massLump, &lump);CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecRestoreArray(ctx->deta, &deta); CHKERRQ(ierr);
   ierr = VecRestoreArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
@@ -1345,6 +1349,8 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
 
   ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = VecReciprocal(ctx->massLump);CHKERRQ(ierr);
+  ierr = MatDiagonalScale(ctx->MatVVPC, ctx->massLump, PETSC_NULL);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
