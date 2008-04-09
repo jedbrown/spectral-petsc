@@ -85,6 +85,8 @@ PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
 PetscErrorCode StokesPCApply(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp(void *);
 PetscErrorCode StokesPCSetUp1(void *);
+PetscErrorCode StokesPCSetUp2(void *);
+PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesVelocityMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename);
@@ -146,8 +148,15 @@ int main(int argc,char **args)
   ierr = PCSetType(pc, PCSHELL);CHKERRQ(ierr);
   ierr = PCShellSetContext(pc, ctx);CHKERRQ(ierr);
   {
-    ierr = PetscOptionsHasName(PETSC_NULL, "-prefd", &flag);CHKERRQ(ierr);
-    ierr = PCShellSetSetUp(pc, flag ? StokesPCSetUp : StokesPCSetUp1);CHKERRQ(ierr);
+    PetscInt t;
+    ierr = PetscOptionsGetInt(PETSC_NULL, "-pcvel", &t, &flag);CHKERRQ(ierr);
+    if (!flag) t = 0;
+    switch (t) {
+      case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp);CHKERRQ(ierr); break;
+      case 1: ierr = PCShellSetSetUp(pc, StokesPCSetUp1);CHKERRQ(ierr); break;
+      case 2: ierr = PCShellSetSetUp(pc, StokesPCSetUp2);CHKERRQ(ierr); break;
+      default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
+    }
   }
   ierr = PCShellSetApply(pc, StokesPCApply);CHKERRQ(ierr);
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
@@ -1274,7 +1283,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
                   for (int i=0; i < d; i++) z += dtest[i] * dtrial[i];
                   //z += dtest[0] * dtrial[0];
                 }
-                A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
+                A[test.i*d+a][trial.i*d+b] += eta[el.i] * z * qw;
               } else { // The full system
                 A[test.i*d+a][trial.i*d+b] += (eta[el.i] * z + deta[el.i] * zhat * zz) * qw;
               }
@@ -1355,6 +1364,73 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
   //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCSetUp2"
+PetscErrorCode StokesPCSetUp2(void *void_ctx)
+{
+  StokesCtx *ctx = (StokesCtx *)void_ctx;
+  PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d,dim), m = d*(4*d+1);
+  PetscInt n, row, col[m];
+  PetscInt *ixL;
+  PetscScalar values[m];
+  ISColoring iscolor;
+  MatFDColoring fdcolor;
+  MatStructure flag;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetSize(ctx->vG0, &n);CHKERRQ(ierr);
+  ierr = ISGetIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+  ierr = PetscMemzero(values, m*sizeof(PetscReal));CHKERRQ(ierr);
+  for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) {
+    for (int i=0; i < d; i++) {
+      PetscInt c=0;
+      row = ixL[it.i*d+i];
+      for (int k=0; k < d; k++) {
+        col[c++] = ixL[it.i*d+k];
+      }
+      if (row < 0) continue;
+      for (int j=0; j < d; j++) {
+        const PetscInt iM = it.shift(j, -1);
+        const PetscInt iP = it.shift(j,  1);
+        const PetscInt iMM = it.shift(j, -2);
+        const PetscInt iPP = it.shift(j,  2);
+        for (int k=0; k < d; k++) {
+          if (iM >= 0)  col[c++] = ixL[iM*d+k];
+          if (iP >= 0)  col[c++] = ixL[iP*d+k];
+          if (iMM >= 0) col[c++] = ixL[iMM*d+k];
+          if (iPP >= 0) col[c++] = ixL[iPP*d+k];
+        }
+      }
+      ierr = MatSetValues(ctx->MatVVPC, 1, &row, c, col, values, INSERT_VALUES);CHKERRQ(ierr);
+    }
+  }
+  ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = ISRestoreIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+  ierr = MatGetColoring(ctx->MatVVPC, MATCOLORING_ID, &iscolor);CHKERRQ(ierr);
+  ierr = MatFDColoringCreate(ctx->MatVVPC, iscolor, &fdcolor);CHKERRQ(ierr);
+  ierr = MatFDColoringSetFunction(fdcolor, (PetscErrorCode(*)(void))StokesColorFunction, ctx);CHKERRQ(ierr);
+  ierr = MatFDColoringSetFromOptions(fdcolor);CHKERRQ(ierr);
+  ierr = MatFDColoringApply(ctx->MatVVPC, fdcolor, ctx->vG0, &flag, PETSC_NULL);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesColorFunction"
+PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx)
+{
+  StokesCtx *ctx = (StokesCtx *)void_ctx;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = MatMult(ctx->MatVV, x, y);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
