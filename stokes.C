@@ -29,7 +29,7 @@ typedef struct { // For higher dimensions, use a different value of `3'
 
 typedef struct {
   PetscInt       debug, cont0, cont;
-  PetscReal      hardness, exponent, regularization, gamma0;
+  PetscReal      hardness, exponent, regularization, gamma0, scaleM, scaleN;
   Rheology       rheology;
   ExactSolution  exact;
   BdyFunc        boundary;
@@ -104,6 +104,7 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
+PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 
 #undef __FUNCT__
 #define __FUNCT__ "main"
@@ -366,6 +367,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   ierr = PetscMalloc(ctx->numDims*sizeof(PetscInt), &ctx->dim);CHKERRQ(ierr);
   exact = 0; boundary = 0; rheology = 0;
   opt->debug = 0; opt->hardness = 1.0; opt->exponent = 1.0; opt->regularization = 1.0; opt->gamma0 = 1.0; opt->cont0 = 0; opt->cont = 1;
+  opt->scaleM = 1.0; opt->scaleN = 1.0;
   ierr = PetscOptionsBegin(comm, "", "Stokes problem options", "");CHKERRQ(ierr);
   ierr = PetscOptionsIntArray("-dim", "list of dimension extent", "stokes.C", ctx->dim, &ctx->numDims, &flag);CHKERRQ(ierr);
   if (!flag) { ctx->numDims = 2; ctx->dim[0] = 8; ctx->dim[1] = 6; }
@@ -379,6 +381,8 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   ierr = PetscOptionsReal("-gamma0", "reference strain", "stokes.C", opt->gamma0, &opt->gamma0, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsInt("-cont0", "starting continuation", "stokes.C", opt->cont0, &opt->cont0, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsInt("-cont", "number of continuations", "stokes.C", opt->cont, &opt->cont, PETSC_NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-scaleM", "scaling factor for Mixed condition", "stokes.C", opt->scaleM, &opt->scaleM, PETSC_NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-scaleN", "scaling factor for Neumann condition", "stokes.C", opt->scaleN, &opt->scaleN, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
 
   ierr = PetscPrintf(comm, "Stokes problem");CHKERRQ(ierr);
@@ -428,6 +432,9 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       ierr = PetscMalloc(sizeof(StokesExactBoundaryCtx), &opt->boundaryCtx);CHKERRQ(ierr);
       ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exact = opt->exact;
       ((StokesExactBoundaryCtx *)opt->boundaryCtx)->exactCtx = opt->exactCtx;
+      break;
+    case 3:
+      opt->boundary    = StokesBoundary3; // This condition does not touch opt->boundaryCtx
       break;
     default:
       SETERRQ1(PETSC_ERR_SUP, "Boundary type %d not implemented", exact);
@@ -896,8 +903,8 @@ PetscErrorCode StokesCreateExactSolution(SNES snes, Vec U, Vec U2)
     p2[i] = u2[d];
   }
   for (int i=0; i < c->numMixed; i++) {
+    const PetscInt I = c->mixed[i].localIndex;
     for (int j=0; j < d; j++) {
-      const PetscInt I = c->mixed[i].localIndex;
       v2[I*d+j] = c->mixed[i].value[j];
     }
   }
@@ -1028,7 +1035,9 @@ PetscErrorCode StokesMixedApply(StokesCtx *c, Vec vL, Vec *stressL, Vec xL)
       for (int k=0; k < d; k++) {
         z += stress[j][I*d+k] * c->mixed[i].normal[k];
       }
+      z *= c->options->scaleN; // Eeek, playing with this has a huge impact on conditioning
       x[I*d+j] = z + c->mixed[i].alpha * v[i*d+j];
+      x[I*d+j] *= c->options->scaleM;
     }
   }
   ierr = VecGetArray(vL, &v);CHKERRQ(ierr);
@@ -1107,20 +1116,7 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
     for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) { // loop over local dof
       const PetscInt i = it.i;
       if (im < ctx->numMixed && i == ctx->mixed[im].localIndex) { // we are at a mixed boundary node
-        // for (int f=0; f < d; f++) { // Just put 1 on the diagonal.  That is, don't enforce the boundary condition in the preconditioner.
-        //   row = ixL[i*d+f]; col[0] = row; v[0] = 1.0;
-        //   ierr = MatSetValues(ctx->MatVVPC, 1, &row, 1, col, v, INSERT_VALUES); CHKERRQ(ierr);
-        // }
         for (int f=0; f < d; f++) {
-          //PetscInt j=0, pm=0, z=0;
-          // for (int k=0; k < d; k++) {
-          //   PetscReal tmp = ctx->mixed[im].normal[k];
-          //   if (PetscSqr(tmp) > z) {
-          //     z = tmp;
-          //     j = k;
-          //     pm = (tmp > 0) ? 1 : -1; // Chebyshev ordering
-          //   }
-          // }
           const PetscReal *normal = ctx->mixed[im].normal;
           const PetscInt j = indexMaxAbs(d, ctx->mixed[im].normal);
           const PetscInt pm = (normal[j] > 0) ? 1 : -1;
@@ -1129,12 +1125,14 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
           row = ixL[i*d+f]; col[0] = row; col[1] = ixL[iM*d+f];
           v[0] = idx * eta[i];
           v[1] = -idx * eta[i];
+          v[0] *= ctx->options->scaleN;
+          v[1] *= ctx->options->scaleN;
           if (ctx->mixed[im].type == MIXED) {
             v[0] += ctx->mixed[im].alpha;
           }
           ierr = MatSetValues(ctx->MatVVPC, 1, &row, 2, col, v, INSERT_VALUES);CHKERRQ(ierr);
         }
-        im++;
+        im++; // Advance the mixed index
       } else { // We are at an interior or Dirichlet node
         for (int f=0; f < d; f++) { // Each equation, corresponds to a row in the matrix
           if (ixL[i*d+f] < 0) continue; // Not a global dof
@@ -1967,6 +1965,31 @@ PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, 
   } else { // Simply impose dirichlet conditions
     *type = DIRICHLET;
     ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesBoundary3"
+PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
+{
+  bool                    inside;
+  PetscErrorCode          ierr;
+
+  PetscFunctionBegin; InFunction;
+  inside = false;
+  for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
+  if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
+    *type = NEUMANN;
+    for (int i=0; i < d; i++) value[i] = 0.0;
+  } else if (false && coord[d-1] < -0.999) { // Impose mixed condition at the bed
+    *type = MIXED;
+    value[0] = 1.0e-2; // alpha
+    for (int i=0; i < d; i++) { value[1+i] = 0.0; } // Zero flux through boundary
+  } else {
+    *type = DIRICHLET;
+    for (int i=0; i < d; i++) value[i] = 0.0;
+    if (coord[d-2] < -0.999) value[d-1] = 1;
   }
   PetscFunctionReturn(0);
 }
