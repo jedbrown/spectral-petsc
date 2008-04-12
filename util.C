@@ -19,6 +19,14 @@ class BlockIt {
     i = 0;
     done = s == 0;
   }
+  BlockIt(const BlockIt &it) : d(it.d), i(it.i), done(it.done) {
+    dim = new int[d]; stride = new int[d]; ind = new int[d];
+    for (int i=0; i < d; i++) {
+      dim[i]    = it.dim[i];
+      stride[i] = it.stride[i];
+      ind[i]    = it.ind[i];
+    }
+  }
   ~BlockIt() {
     delete [] dim;
     delete [] stride;
@@ -65,6 +73,7 @@ class BlockIt {
     }
     return (n2 > 1e-10);
   }
+  int numDims() const { return d; }
   bool done;
   int i, *ind;
   private:

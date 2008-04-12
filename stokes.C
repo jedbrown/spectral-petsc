@@ -8,7 +8,7 @@ static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev c
 #include "chebyshev.h"
 #include "util.C"
 #include <petscsnes.h>
-#include <stdbool.h>
+#include <cppad/cppad.hpp>
 
 typedef enum { DIRICHLET, NEUMANN, MIXED } BdyType;
 
@@ -83,10 +83,12 @@ PetscErrorCode StokesMixedApply(StokesCtx *, Vec vL, Vec *stressL, Vec xL);
 PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
 PetscErrorCode StokesPCApply(void *, Vec, Vec);
-PetscErrorCode StokesPCSetUp(void *);
-PetscErrorCode StokesPCSetUp1(void *);
-PetscErrorCode StokesPCSetUp2(void *);
+PetscErrorCode StokesPCSetUp0(void *);  // simple finite difference
+PetscErrorCode StokesPCSetUp1(void *); // Q1 finite element
+PetscErrorCode StokesPCSetUp2(void *); // some matrix entries from spectral matrix
 PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx);
+PetscErrorCode StokesPCSetUp3(void *); // finite difference with CppAD
+PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *Jinv, const PetscReal *x, const PetscReal *Eta, const PetscReal *dEta, PetscReal **Strain, PetscReal *nodeJac);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesVelocityMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename);
@@ -152,9 +154,10 @@ int main(int argc,char **args)
     ierr = PetscOptionsGetInt(PETSC_NULL, "-pcvel", &t, &flag);CHKERRQ(ierr);
     if (!flag) t = 0;
     switch (t) {
-      case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp);CHKERRQ(ierr); break;
+      case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp0);CHKERRQ(ierr); break;
       case 1: ierr = PCShellSetSetUp(pc, StokesPCSetUp1);CHKERRQ(ierr); break;
       case 2: ierr = PCShellSetSetUp(pc, StokesPCSetUp2);CHKERRQ(ierr); break;
+      case 3: ierr = PCShellSetSetUp(pc, StokesPCSetUp3);CHKERRQ(ierr); break;
       default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
     }
   }
@@ -1081,8 +1084,8 @@ PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL)
 }
 
 #undef __FUNCT__
-#define __FUNCT__ "StokesPCSetUp"
-PetscErrorCode StokesPCSetUp(void *void_ctx)
+#define __FUNCT__ "StokesPCSetUp0"
+PetscErrorCode StokesPCSetUp0(void *void_ctx)
 {
   StokesCtx     *ctx = (StokesCtx *)void_ctx;
   PetscInt       d = ctx->numDims, *dim = ctx->dim;
@@ -1185,6 +1188,9 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   const PetscReal qweight[3]  = {0.55555555555556, 0.88888888888889, 0.55555555555556};
   const PetscReal basis[2][3] = {{0.887298334621,0.5,0.112701665379},{0.112701665379,0.5,0.887298334621}};
   const PetscReal deriv[2][3] = {{-0.5, -0.5, -0.5},{0.5, 0.5, 0.5}};
+  // Wonky element!
+  //const PetscReal basis[2][3] = {{6.87298335e-01,-5.55111512e-17,-8.72983346e-02},{-8.72983346e-02,-5.55111512e-17,6.87298335e-01}};
+  //const PetscReal deriv[2][3] = {{-1.27459667e+00,-5.00000000e-01,2.74596669e-01},{-2.74596669e-01,5.00000000e-01,1.27459667e+00}};
   const PetscInt  qdim[]      = {3,3,3,3,3};
 #endif
   const PetscInt ndim[]       = {2,2,2,2,2}; // 2 nodes in each direction within each element
@@ -1431,6 +1437,176 @@ PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx)
 
   PetscFunctionBegin;
   ierr = MatMult(ctx->MatVV, x, y);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCSetUp3"
+PetscErrorCode StokesPCSetUp3(void *void_ctx)
+{
+  StokesCtx     *ctx = (StokesCtx *)void_ctx;
+  PetscInt       d = ctx->numDims, *dim = ctx->dim;
+  PetscReal     *x, *Eta, *dEta, **Strain;
+  PetscInt      *ixL;
+  PetscTruth     flg;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArray(ctx->eta, &Eta); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->deta, &dEta); CHKERRQ(ierr);
+  ierr = VecGetArrays(ctx->strain, d, &Strain); CHKERRQ(ierr);
+  ierr = VecGetArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISGetIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+  {
+    const PetscInt S = 2*d+1; // stencil size
+    PetscInt row[d], col[S*d];
+    PetscReal nodeJac[S*d*d];
+    for (BlockIt node = BlockIt(d, dim); !node.done; node.next()) { // local nodes
+      ierr = PetscMemzero(nodeJac, S*d*d*sizeof(PetscReal));CHKERRQ(ierr);
+      if (true) { // We are at an interior or Dirichlet node
+        if (ixL[node.i*d+0] < 0) continue;
+        if (ixL[node.i*d+1] < 0) continue;
+        const PetscReal J[2][2] = { x[node.shift(0,1)*d+0] - x[node.shift(0,-1)*d+0],
+                                    x[node.shift(0,1)*d+1] - x[node.shift(0,-1)*d+1],
+                                    x[node.shift(1,1)*d+0] - x[node.shift(1,-1)*d+0],
+                                    x[node.shift(1,1)*d+1] - x[node.shift(1,-1)*d+1] };
+        const PetscReal iJdet = 1.0 / (J[0][0]*J[1][1] - J[0][1]*J[1][0]);
+        const PetscReal Jinv[2*2] = { iJdet*J[1][1], -iJdet*J[0][1], -iJdet*J[1][0], iJdet*J[0][0] };
+        //PetscReal Jinv[d*d];
+        ierr = StokesComputeNodalJacobian(node, Jinv, x, Eta, dEta, Strain, nodeJac);CHKERRQ(ierr);
+
+        // Insert nodal Jacobian into matrix
+        PetscInt I[S];
+        I[0] = node.i;
+        for (int i=0; i < d; i++) {
+          I[i*2+1] = node.shift(i,-1);
+          I[i*2+2] = node.shift(i,1);
+        }
+        //ierr = PetscIntView(S, I, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+        //for (int i=0; i < S; i++) { printf("(%2d,%2d) ", ixL[I[i]*d+0], ixL[I[i]*d+1]); } printf("\n");
+        for (int i=0; i < d; i++) { //component of residual
+          row[0] = ixL[node.i*d+i];
+          for (int j=0; j < S; j++) {
+            for (int k=0; k < d; k++) {
+              col[j*d+k] = ixL[I[j]*d+k];
+            }
+          }
+          ierr = MatSetValues(ctx->MatVVPC, 1, row, S*d, col, &nodeJac[i*S*d], INSERT_VALUES); CHKERRQ(ierr);
+        }
+      }
+    }
+  }
+  ierr = VecRestoreArray(ctx->eta, &Eta); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->deta, &dEta); CHKERRQ(ierr);
+  ierr = VecRestoreArrays(ctx->strain, d, &Strain); CHKERRQ(ierr);
+  ierr = VecRestoreArray(ctx->coord, &x); CHKERRQ(ierr);
+  ierr = ISRestoreIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
+
+  ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesComputeNodalJacobian"
+PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *Jinv, const PetscReal *x, const PetscReal *Eta, const PetscReal *dEta, PetscReal **Strain, PetscReal *nodeJac)
+{
+  using namespace CppAD;
+  const PetscInt d = node.numDims(), S = 2*d+1;
+  vector< AD<double> > vel(S*d), residual(d), flux(S*d*d);
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  Independent(vel);
+
+#if 1
+  for (int i=0; i < d; i++) { // stagger direction
+    for (int pm=0; pm < 2; pm++) { // stagger offset
+      const PetscInt pmo = (pm == 0) ? -1 : 1;
+      const PetscInt ipm = i*2+pm;
+      PetscReal D0[d*d];
+      vector< AD<double> >    dvel(d*d), Dvel(d*d), D(d*d);
+      for (int j=0; j < d; j++) { // velocity component
+        for (int k=0; k < d; k++) { // derivative direction
+          D0[j*d+k] = 0.5 * (Strain[j][node.i*d+k] + Strain[j][node.shift(i,pmo)*d+k]);
+          if (i == k) {
+            dvel[j*d+k] = 0.5 * pmo * (vel[(ipm+1)*d+j] - vel[j]);
+          } else {
+            dvel[j*d+k] = 0.0; // need to do some other stencil here.
+          }
+        }
+      }
+      for (int j=0; j < d; j++) {
+        // Apply Jacobian
+        for (int k=0; k < d; k++) { // real derivative direction
+          Dvel[j*d+k] = 0.0;
+          for (int l=0; l < d; l++) { // grid derivative direction
+            Dvel[j*d+k] += dvel[j*d+l] * Jinv[l*d+k];
+          }
+        }
+        // Symmetrize
+        for (int k=0; k < d; k++) {
+          D[j*d+k] = 0.5 * (Dvel[j*d+k] + Dvel[k*d+j]);
+        }
+      }
+      // compute flux (at staggered points)
+      AD<double> z = 0.0;
+      for (int j=0; j < d; j++) {
+        for (int k=0; k < d; k++) {
+          z += D[j*d+k] * D0[j*d+k];
+        }
+      }
+      const PetscReal eta = 0.5 * (Eta[node.i] + Eta[node.shift(i,pmo)]);
+      const PetscReal deta = 0.5 * (dEta[node.i] + dEta[node.shift(i,pmo)]);
+      for (int j=0; j < d; j++) {
+        for (int k=0; k < d; k++) {
+          flux[(ipm*d+j)*d+k] = eta * D[j*d+k]; // + deta * D0[j*d+k] * z;
+        }
+      }
+    }
+  }
+  // compute divergence of flux tensor
+  for (int i=0; i < d; i++) { // component of residual
+    residual[i] = 0.0;
+    for (int j=0; j < d; j++) { // real derivative direction
+      for (int k=0; k < d; k++) { // grid derivative direction
+        residual[i] -= (flux[((k*2+1)*d+i)*d+j] - flux[((k*2+0)*d+i)*d+j]) * Jinv[k*d+j];
+      }
+    }
+  }
+  for (int i=0; i < d; i++) {
+    residual[i] = 0.0;
+    for (int j=0; j < d; j++) {
+      const PetscInt iM = node.shift(j, -1);
+      const PetscInt iP = node.shift(j,  1);
+      const PetscReal   x0 = x[node.i*d+j],   xMM = x[iM*d+j],    xPP = x[iP*d+j];
+      const PetscReal   xM=0.5*(xMM+x0), idxM=1/(x0-xMM), xP=0.5*(x0+xPP), idxP=1/(xPP-x0), idx=1/(xP-xM);
+      const PetscReal eM = 0.5*(Eta[iM]+Eta[node.i]), eP=0.5*(Eta[node.i]+Eta[iP]);
+      const AD<double> vM = idxM*(vel[i] - vel[(j*2+1)*d+i]), vP = idxP*(vel[(j*2+2)*d+i] - vel[i]);
+      residual[i] -= idx*(eP*vP - eM*vM);
+    }
+  }
+#elif 0
+  for (int i=0; i < d; i++) {
+    residual[i] = 4 * vel[i];
+    for (int j=1; j < S; j++) {
+      residual[i] -= vel[j*d+i];
+    }
+  }
+#endif
+
+  ADFun<double> nodeFunc(vel, residual);
+  vector<double> jac(S*d*d), dummy(S*d);
+  for (int i=0; i < S*d; i++) dummy[i] = 0.0;
+  jac = nodeFunc.Jacobian(dummy);
+  //std::cout << jac << std::endl;
+  for (int i=0; i < S*d*d; i++) {
+    nodeJac[i] = jac[i];
+  }
   PetscFunctionReturn(0);
 }
 
