@@ -1472,7 +1472,6 @@ PetscErrorCode StokesPCSetUp3(void *void_ctx)
                                     x[node.shift(1,1)*d+1] - x[node.shift(1,-1)*d+1] };
         const PetscReal iJdet = 1.0 / (J[0][0]*J[1][1] - J[0][1]*J[1][0]);
         const PetscReal Jinv[2*2] = { iJdet*J[1][1], -iJdet*J[0][1], -iJdet*J[1][0], iJdet*J[0][0] };
-        //PetscReal Jinv[d*d];
         ierr = StokesComputeNodalJacobian(node, Jinv, x, Eta, dEta, Strain, nodeJac);CHKERRQ(ierr);
 
         // Insert nodal Jacobian into matrix
@@ -1490,6 +1489,9 @@ PetscErrorCode StokesPCSetUp3(void *void_ctx)
             for (int k=0; k < d; k++) {
               col[j*d+k] = ixL[I[j]*d+k];
             }
+          }
+          for (int j=0; j < S*d; j++) {
+            if (PetscAbs(nodeJac[i*S*d+j]) < 1e-10) col[j] = -1;
           }
           ierr = MatSetValues(ctx->MatVVPC, 1, row, S*d, col, &nodeJac[i*S*d], INSERT_VALUES); CHKERRQ(ierr);
         }
@@ -1523,7 +1525,9 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
   PetscFunctionBegin;
   Independent(vel);
 
-#if 1
+#define QUALITY 2
+#if (QUALITY == 3)
+  // Semi-complete stencil, using nodal Jacobian
   for (int i=0; i < d; i++) { // stagger direction
     for (int pm=0; pm < 2; pm++) { // stagger offset
       const PetscInt pmo = (pm == 0) ? -1 : 1;
@@ -1534,9 +1538,10 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
         for (int k=0; k < d; k++) { // derivative direction
           D0[j*d+k] = 0.5 * (Strain[j][node.i*d+k] + Strain[j][node.shift(i,pmo)*d+k]);
           if (i == k) {
-            dvel[j*d+k] = 0.5 * pmo * (vel[(ipm+1)*d+j] - vel[j]);
+            dvel[j*d+k] = pmo * (vel[(ipm+1)*d+j] - vel[j]);
           } else {
-            dvel[j*d+k] = 0.0; // need to do some other stencil here.
+            dvel[j*d+k] = 0.5 * (vel[(k*2+2)*d+j] - vel[(k*2+1)*d+j]);
+            // need to do some other stencil here.
           }
         }
       }
@@ -1564,7 +1569,7 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
       const PetscReal deta = 0.5 * (dEta[node.i] + dEta[node.shift(i,pmo)]);
       for (int j=0; j < d; j++) {
         for (int k=0; k < d; k++) {
-          flux[(ipm*d+j)*d+k] = eta * D[j*d+k]; // + deta * D0[j*d+k] * z;
+          flux[(ipm*d+j)*d+k] = eta * D[j*d+k] + deta * D0[j*d+k] * z;
         }
       }
     }
@@ -1578,6 +1583,8 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
       }
     }
   }
+#elif (QUALITY == 2)
+  // Laplacian using coordinate values
   for (int i=0; i < d; i++) {
     residual[i] = 0.0;
     for (int j=0; j < d; j++) {
@@ -1590,13 +1597,19 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
       residual[i] -= idx*(eP*vP - eM*vM);
     }
   }
-#elif 0
+#elif (QUALITY == 1)
+  // Laplacian using nodal Jacobian
   for (int i=0; i < d; i++) {
-    residual[i] = 4 * vel[i];
-    for (int j=1; j < S; j++) {
-      residual[i] -= vel[j*d+i];
+    residual[i] = 0.0;
+    for (int j=0; j < d; j++) {
+      const PetscInt iM = node.shift(j, -1);
+      const PetscInt iP = node.shift(j,  1);
+      const PetscReal idx = Jinv[j*d+j];
+      const AD<double> vM = idx*(vel[i] - vel[(j*2+1)*d+i]), vP = idx*(vel[(j*2+2)*d+i] - vel[i]);
+      residual[i] -= idx*(vP - vM);
     }
   }
+}
 #endif
 
   ADFun<double> nodeFunc(vel, residual);

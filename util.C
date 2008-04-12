@@ -51,6 +51,13 @@ class BlockIt {
     if (is < 0 || is >= dim[j]) return -1;
     return i + s * stride[j];
   }
+  int shift2(int j0, int s0, int j1, int s1) const {
+    const int is0 = ind[j0] + s0;
+    if (is0 < 0 || is0 >= dim[j0]) return -1;
+    const int is1 = ind[j1] + s1 + (j0 == j1) ? s0 : 0;
+    if (is1 < 0 || is1 >= dim[j1]) return -1;
+    return i + s0 * stride[j0] + s1 * stride[j1];
+  }
   int plus(int *offset) const {
     int I = 0;
     for (int j=d-1; j >= 0; j--) {
