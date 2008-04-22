@@ -10,7 +10,7 @@ static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev c
 #include <petscsnes.h>
 #include <cppad/cppad.hpp>
 
-typedef enum { DIRICHLET, NEUMANN, MIXED } BdyType;
+typedef enum { DIRICHLET, NEUMANN, MIXED, OUTFLOW } BdyType;
 
 typedef PetscErrorCode(*ExactSolution)(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx);
 typedef PetscErrorCode(*BdyFunc)(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
@@ -105,6 +105,7 @@ PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, 
 PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
+PetscErrorCode StokesBoundary4(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *ctx);
 
 #undef __FUNCT__
 #define __FUNCT__ "main"
@@ -435,6 +436,9 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       break;
     case 3:
       opt->boundary    = StokesBoundary3; // This condition does not touch opt->boundaryCtx
+      break;
+    case 4:
+      opt->boundary    = StokesBoundary4;
       break;
     default:
       SETERRQ1(PETSC_ERR_SUP, "Boundary type %d not implemented", exact);
@@ -796,6 +800,15 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
             }
           }
           break;
+        case OUTFLOW: // Just like an interior point, except without pressure
+          for (int k=0; k < d; k++) {
+            ixLV[lv] = gv; ixVL[gv] = lv;
+            ixVG[gv] = g;  ixGV[g ] = gv;
+            ixGP[g] = -1;
+            ixLD[lv] = -1;
+            lv++; gv++; g++;
+          }
+          break;
         default:
           SETERRQ(1, "Boundary type not implemented.");
       }
@@ -1140,7 +1153,12 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
           for (int j=0; j < d; j++) { // each direction
             const PetscInt iM = it.shift(j, -1);
             const PetscInt iP = it.shift(j,  1);
-            if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
+            if (iM < 0 || iP < 0) {
+              // It must be an outflow point.
+              //SETERRQ(1, "Local neighbor not on local grid.");
+              v[0] = 1.0; c = 1;
+              continue;
+            }
             x0 = x[i*d+j]; xMM = x[iM*d+j]; xPP = x[iP*d+j];
             xM = 0.5*(xMM+x0); idxM = 1.0/(x0-xMM); xP = 0.5*(x0+xPP); idxP = 1.0/(xPP-x0); idx = 1.0/(xP-xM);
             eM = 0.5*(eta[iM]+eta[i]); deM = 0.5*(deta[iM]+deta[i]);
@@ -1863,7 +1881,7 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   }
   if (rhs) {
     rhs[0]   = 0.0;
-    rhs[1]   = 0.0;
+    rhs[1]   = -0.0;
     rhs[2]   = 0.0;
   }
   PetscFunctionReturn(0);
@@ -1894,7 +1912,7 @@ PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, 
 
   PetscFunctionBegin; InFunction;
   inside = false;
-  for (int i=0; i < d-1; i++) inside |= (PetscAbs(coord[i]) < 0.999);
+  for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
   if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
     PetscReal x[d], v[d], w[d], vel[d][d];
     *type = NEUMANN;
@@ -1935,7 +1953,7 @@ PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, 
 
   PetscFunctionBegin; InFunction;
   inside = false;
-  for (int i=0; i < d-1; i++) inside |= (PetscAbs(coord[i]) < 0.999);
+  for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
   if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
     PetscReal x[d], v[d], w[d], vel[d][d];
     *type = NEUMANN;
@@ -1979,7 +1997,8 @@ PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, 
   PetscFunctionBegin; InFunction;
   inside = false;
   for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
-  if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
+  inside = true;
+  if (false && (coord[d-2] > 0.999 || coord[d-1] < -1.999) && inside) { // Impose condition at the 'surface'
     *type = NEUMANN;
     for (int i=0; i < d; i++) value[i] = 0.0;
   } else if (false && coord[d-1] < -0.999) { // Impose mixed condition at the bed
@@ -1989,7 +2008,31 @@ PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, 
   } else {
     *type = DIRICHLET;
     for (int i=0; i < d; i++) value[i] = 0.0;
-    if (coord[d-2] < -0.999) value[d-1] = 1;
+    //if (coord[d-1] > 0.999) value[d-2] = 2;
+    if (coord[d-2] < -0.999) value[d-2] = 1 + coord[d-1];
+    else if (coord[d-1] < -0.999) value[d-2] = 0.5 * (1 + coord[d-2]);
+    else if (coord[d-1] >  0.999) value[d-2] = 0.5 * (3 - coord[d-2]);
+    else value[d-2] = 1;
+  }
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesBoundary4"
+PetscErrorCode StokesBoundary4(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
+{
+  bool                    inside;
+  PetscErrorCode          ierr;
+
+  PetscFunctionBegin; InFunction;
+  *type = DIRICHLET;
+  for (int i=0; i < d; i++) value[i] = 0.0;
+  if      (coord[d-2] < -0.999) value[d-2] = 1 - 0.25  * PetscSqr(coord[d-1]-1);
+  else if (coord[d-2] >  0.999) *type = OUTFLOW;
+  else if (coord[d-1] >  0.999) value[d-2] = 1;
+  if (coord[d-1] > 0.999) {
+    *type = NEUMANN;
+    //value[d-2] = 0.0;
   }
   PetscFunctionReturn(0);
 }
