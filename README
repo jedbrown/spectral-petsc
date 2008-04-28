@@ -1,7 +1,9 @@
 Experiments with matrix-free Chebyshev collocation for nonlinear elliptic/Stokes
 problems with fully iterative solutions.
 
-You will need FFTW and a recent PETSc to build.
+You will need FFTW and a recent PETSc to build.  If you are not using petsc-dev,
+switch the include line in the Makefile.  If you do not have CppAD, define
+WITH_CPPAD to be 0 in stokes.C.
 
 The numerical method is spectral collocation on the Chebyshev-Gauss-Lobatto
 nodes.  Derivatives are applied by DCT using FFTW.  For preconditioning, a low
@@ -13,3 +15,54 @@ number of required iterations is nearly independent of polynomial order.  Thus,
 for a 3D problem with polynomial order P in each cartesion direction, there are
 P^3 nodes and O(P^3 log P) operations required when using multigrid
 preconditioning.  This is optimal for a spectral method.
+
+The scalar elliptic implementation is truly arbitrary dimensional.  For instance
+
+  ./elliptic -dim 12,12,12,12,12 -pc_type hypre -exact 2 -ksp_monitor -ksp_rtol 1e-10
+
+solves the Poisson problem in 5 dimensions with multigrid preconditioning,
+comparing to an exact solution with inhomogenous Dirichlet data.
+
+For the Stokes problem, the we must precondition the saddle point problem.  This
+is done by approximately solving with the Schur complement (a block LU
+decomposition).  There are KSP objects to control.  The top level will typically
+need to be FGMRES since the preconditioner is usually not linear.  The Schur
+complement is controlled by -schur_ksp_xxx.  For slow flow problems, the Schur
+complement is usually preconditioned with the mass matrix.  For a collocation
+method, the mass matrix is the identity, so we do not precondition it.  Perhaps
+we can do something clever for the power law rheology which increases the
+condition number.  Part of the block LU involves a solve with the (viscous)
+velocity problem.  This is controlled by -vel_xx.  The preconditioner matrix is
+the sparse approximation.  Typically, we will use AMG and a few iterations (~5)
+of GMRES on this problem.  Applying the Schur complement also involves an
+(approximate) solve with the velocity system.  This solve is controlled by
+-svel_xx.  Here, it is less beneficial to do a good solve, so we may do just one
+V-cycle on the sparse approximation.  Putting this all together, we have
+something like:
+
+  ./stokes -exact 2 -cont0 1 -schur_ksp_max_it 3 -vel_ksp_max_it 4 -vel_pc_type hypre -svel_ksp_type preonly -svel_pc_type hypre -ksp_type fgmres -ksp_monitor -dim 20,20,20 -ksp_rtol 1e-10
+
+When the power law rheology has very weak regularization, we must do a
+continuation for the Newton iteration to converge.  The option -cont0 <n> gives
+the starting value of the continuation (usually 0 to solve the linear problem)
+and -cont <n> gives the final value.  Use -rheology 1 to use power law rheology.
+Note that the error for exact solutions no longer applies since they are for
+linear viscosity.
+
+  ./stokes -exact 2 -cont 4 -rheology 1 -eps 1e-4 -exponent 3 -schur_ksp_max_it 3 -vel_ksp_max_it 4 -vel_pc_type hypre -svel_ksp_type preonly -svel_pc_type hypre -ksp_type fgmres -ksp_monitor -snes_monitor -dim 20,20,20
+
+
+For the preconditioning matrix, there are a few options, although the simple
+finite difference poisson-type preconditioner seems pretty good.  I suspect the
+Q1 finite element version will do better with a high order Galerkin method.
+Interestingly, the finite difference via automatic differentiation does not
+typically work better than the simple version.  Also, there seems to be a bug in
+CppAD which makes it break on certain problems.  Note that just subsampling the
+spectral matrix with specified stencil provides a very poor preconditioner.
+Choose velocity preconditioning matrices with -pcvel <n>.
+
+The current approach for Neumann and mixed boundary conditions is
+broken/incomplete.  While the Neumann condition works, it destroys the
+conditioning of the system so convergence is slow.  I am not sure that the mixed
+condition is even correct and convergence is terrible.  A suitable outflow
+boundary is also needed, but this is not implemented.

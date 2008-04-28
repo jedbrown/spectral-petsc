@@ -22,7 +22,8 @@ poisson : poisson.o chebyshev.o chkopts
 	${CLINKER} -o poisson poisson.o chebyshev.o -lfftw3 ${PETSC_LIB}
 
 elliptic : elliptic.o chebyshev.o chkopts
-	${CLINKER} -o elliptic elliptic.o chebyshev.o ${PROF} -lfftw3 ${PETSC_LIB}
+	@-echo 'Linking elliptic'
+	@-${CLINKER} -o elliptic elliptic.o chebyshev.o ${PROF} -lfftw3 ${PETSC_LIB}
 
 stokes : stokes.o chebyshev.o chkopts
 	@-echo 'Linking stokes'

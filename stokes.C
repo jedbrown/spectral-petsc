@@ -1,7 +1,5 @@
 static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev collocation.\n";
 
-//#define InFunction printf("%s\n", __FUNCT__)
-#define InFunction
 #define SOLVE 1
 #define CHECK_EXACT 1
 #define WITH_CPPAD 1
@@ -161,11 +159,11 @@ int main(int argc,char **args)
     ierr = PetscOptionsGetInt(PETSC_NULL, "-pcvel", &t, &flag);CHKERRQ(ierr);
     if (!flag) t = 0;
     switch (t) {
-      case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp0);CHKERRQ(ierr); break;
-      case 1: ierr = PCShellSetSetUp(pc, StokesPCSetUp1);CHKERRQ(ierr); break;
-      case 2: ierr = PCShellSetSetUp(pc, StokesPCSetUp2);CHKERRQ(ierr); break;
+      case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp0);CHKERRQ(ierr); break; // Simple finite difference
+      case 1: ierr = PCShellSetSetUp(pc, StokesPCSetUp1);CHKERRQ(ierr); break; // Finite element
+      case 2: ierr = PCShellSetSetUp(pc, StokesPCSetUp2);CHKERRQ(ierr); break; // Subsampling the spectral matrix using coloring
 #if (WITH_CPPAD)
-      case 3: ierr = PCShellSetSetUp(pc, StokesPCSetUp3);CHKERRQ(ierr); break;
+      case 3: ierr = PCShellSetSetUp(pc, StokesPCSetUp3);CHKERRQ(ierr); break; // Finite difference with automatic differentiation
 #endif
       default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
     }
@@ -640,7 +638,7 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
   PetscReal      **v, **strain, *eta, *deta;
   PetscErrorCode   ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   d = c->numDims; n = productInt(d, c->dim);
   xL = c->workV[0]; yL = c->workV[1]; V = &c->workV[2]; W = &c->workV[2+d];
   ierr = VecScatterBegin(c->scatterGP, xG, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
@@ -1782,7 +1780,7 @@ PetscErrorCode StokesVecView(Vec v, PetscInt nodes, PetscInt pernode, PetscInt p
 PetscErrorCode StokesRheologyLinear(PetscInt d, PetscReal gamma, PetscReal *eta, PetscReal *deta, void *ctx)
 {
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   *eta = 1.0; *deta = 0.0;
   PetscFunctionReturn(0);
 }
@@ -1810,7 +1808,7 @@ PetscErrorCode StokesRheologyPower(PetscInt d, PetscReal gamma, PetscReal *eta, 
 PetscErrorCode StokesExact0(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx)
 {
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   if (value) {
     for (int i=0; i < d+1; i++) value[i] = 0.0;
   }
@@ -1827,7 +1825,7 @@ PetscErrorCode StokesExact1(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   const PetscReal eta = 1.0;
   PetscReal u, v, p;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   if (d > 3) SETERRQ2(1, "%s only implemented for dimension 2 and 3 but %d given", __FUNCT__, d);
   u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
   v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
@@ -1855,7 +1853,7 @@ PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   const PetscReal eta = 1.0;
   PetscReal u, v, p;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   if (d > 3) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
   u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
   v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
@@ -1880,7 +1878,7 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   const PetscReal eta = 1.0;
   PetscReal u, v, p;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   if (d != 2) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
   u = coord[1] + 1.0;
   v = 0.0;
@@ -1904,7 +1902,7 @@ PetscErrorCode StokesDirichlet(PetscInt d, PetscReal *coord, PetscReal *normal, 
   StokesExactBoundaryCtx *ctx = (StokesExactBoundaryCtx *)void_ctx;
   PetscErrorCode ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   *type = DIRICHLET;
   ierr = ctx->exact(d, coord, value, PETSC_NULL, ctx->exactCtx);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -1919,7 +1917,7 @@ PetscErrorCode StokesBoundary1(PetscInt d, PetscReal *coord, PetscReal *normal, 
   bool                    inside;
   PetscErrorCode          ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   inside = false;
   for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
   if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
@@ -1960,7 +1958,7 @@ PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, 
   bool                    inside;
   PetscErrorCode          ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   inside = false;
   for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
   if (coord[d-1] > 0.999 && inside) { // Impose condition at the 'surface'
@@ -2003,7 +2001,7 @@ PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, 
   bool                    inside;
   PetscErrorCode          ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   inside = false;
   for (int i=0; i < d-1; i++) inside = inside || (PetscAbs(coord[i]) < 0.999);
   inside = true;
@@ -2033,7 +2031,7 @@ PetscErrorCode StokesBoundary4(PetscInt d, PetscReal *coord, PetscReal *normal, 
   bool                    inside;
   PetscErrorCode          ierr;
 
-  PetscFunctionBegin; InFunction;
+  PetscFunctionBegin;
   *type = DIRICHLET;
   for (int i=0; i < d; i++) value[i] = 0.0;
   if      (coord[d-2] < -0.999) value[d-2] = 1 - 0.25  * PetscSqr(coord[d-1]-1);

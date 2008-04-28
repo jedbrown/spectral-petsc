@@ -140,7 +140,7 @@ int main(int argc,char **args)
   ac->dim[0] = 8; ac->dim[1] = 6; // default dimension extent
   ac->debug = 0; ac->exact = 0; ac->gamma = 0.0; ac->exponent = 2.0;
   ierr = PetscOptionsBegin(PETSC_COMM_WORLD, "", "Elliptic problem options", ""); CHKERRQ(ierr);
-  ierr = PetscOptionsIntArray("-dims", "list of dimension extent", "elliptic.C", ac->dim, &ac->d, &flag); CHKERRQ(ierr);
+  ierr = PetscOptionsIntArray("-dim", "list of dimension extent", "elliptic.C", ac->dim, &ac->d, &flag); CHKERRQ(ierr);
   if (!flag) ac->d = 2;
   ierr = PetscOptionsInt("-debug", "debugging level", "elliptic.C", ac->debug, &ac->debug, PETSC_NULL); CHKERRQ(ierr);
   ierr = PetscOptionsInt("-exact", "exact solution type", "elliptic.C", ac->exact, &ac->exact, PETSC_NULL); CHKERRQ(ierr);
