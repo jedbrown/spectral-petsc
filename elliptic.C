@@ -132,7 +132,7 @@ int main(int argc,char **args)
   PetscFunctionBegin;
   //ierr = PetscMallocSetDumpLog(); CHKERRQ(ierr);
   ierr = PetscInitialize(&argc,&args,(char *)0,help); CHKERRQ(ierr);
-  ierr = fftw_import_system_wisdom(); CHKERRQ(ierr);
+  fftw_import_system_wisdom();
   ierr = PetscMalloc(sizeof(AppCtx), &ac); CHKERRQ(ierr);
   ac->d = 10; // Maximum number of dimensions
   ierr = PetscMalloc(ac->d*sizeof(PetscInt), &ac->dim); CHKERRQ(ierr);
@@ -253,7 +253,7 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
 
   PetscFunctionBegin;
   ierr = PetscMalloc(sizeof(MatElliptic), &c); CHKERRQ(ierr);
-  ierr = PetscMalloc2(d, PetscInt, &c->dim, d, Vec, &c->D); CHKERRQ(ierr);
+  ierr = PetscMalloc2(d, PetscInt, &c->dim, d, Mat, &c->D); CHKERRQ(ierr);
   c->d = d;
   for (int i=0; i<d; i++) { c->dim[i] = dim[i]; }
   PetscInt m = productInt(d, dim);

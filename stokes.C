@@ -4,11 +4,14 @@ static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev c
 #define InFunction
 #define SOLVE 1
 #define CHECK_EXACT 1
+#define WITH_CPPAD 1
 
 #include "chebyshev.h"
 #include "util.C"
 #include <petscsnes.h>
+#if (WITH_CPPAD)
 #include <cppad/cppad.hpp>
+#endif
 
 typedef enum { DIRICHLET, NEUMANN, MIXED, OUTFLOW } BdyType;
 
@@ -87,7 +90,9 @@ PetscErrorCode StokesPCSetUp0(void *);  // simple finite difference
 PetscErrorCode StokesPCSetUp1(void *); // Q1 finite element
 PetscErrorCode StokesPCSetUp2(void *); // some matrix entries from spectral matrix
 PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx);
+#if (WITH_CPPAD)
 PetscErrorCode StokesPCSetUp3(void *); // finite difference with CppAD
+#endif
 PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *Jinv, const PetscReal *x, const PetscReal *Eta, const PetscReal *dEta, PetscReal **Strain, PetscReal *nodeJac);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesVelocityMatMult(Mat, Vec, Vec);
@@ -128,7 +133,7 @@ int main(int argc,char **args)
 
   PetscFunctionBegin;
   ierr = PetscInitialize(&argc,&args,(char *)0,help);CHKERRQ(ierr);
-  ierr = fftw_import_system_wisdom();CHKERRQ(ierr);
+  fftw_import_system_wisdom();
   ierr = StokesCreate(comm, &A, &x, &ctx);CHKERRQ(ierr);
   opt = ctx->options;
   {
@@ -159,7 +164,9 @@ int main(int argc,char **args)
       case 0: ierr = PCShellSetSetUp(pc, StokesPCSetUp0);CHKERRQ(ierr); break;
       case 1: ierr = PCShellSetSetUp(pc, StokesPCSetUp1);CHKERRQ(ierr); break;
       case 2: ierr = PCShellSetSetUp(pc, StokesPCSetUp2);CHKERRQ(ierr); break;
+#if (WITH_CPPAD)
       case 3: ierr = PCShellSetSetUp(pc, StokesPCSetUp3);CHKERRQ(ierr); break;
+#endif
       default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
     }
   }
@@ -1456,6 +1463,7 @@ PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx)
   PetscFunctionReturn(0);
 }
 
+#if (WITH_CPPAD)
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp3"
 PetscErrorCode StokesPCSetUp3(void *void_ctx)
@@ -1528,6 +1536,7 @@ PetscErrorCode StokesPCSetUp3(void *void_ctx)
   //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
+#endif
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesComputeNodalJacobian"
