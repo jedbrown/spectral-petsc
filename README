@@ -1,0 +1,15 @@
+Experiments with matrix-free Chebyshev collocation for nonlinear elliptic/Stokes
+problems with fully iterative solutions.
+
+You will need FFTW and a recent PETSc to build.
+
+The numerical method is spectral collocation on the Chebyshev-Gauss-Lobatto
+nodes.  Derivatives are applied by DCT using FFTW.  For preconditioning, a low
+order method (finite difference or finite element) on the collocation nodes is
+used to produce a sparse matrix which captures the spectral properties of the
+high order (dense, thus not actually formed) matrix.  If a strong preconditioner
+(for instance -pc_type lu or -pc_type hypre) is used on this sparse matrix, the
+number of required iterations is nearly independent of polynomial order.  Thus,
+for a 3D problem with polynomial order P in each cartesion direction, there are
+P^3 nodes and O(P^3 log P) operations required when using multigrid
+preconditioning.  This is optimal for a spectral method.
