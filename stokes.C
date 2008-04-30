@@ -69,6 +69,7 @@ PetscErrorCode StokesDestroy(StokesCtx *);
 PetscErrorCode StokesProcessOptions(StokesCtx *);
 PetscErrorCode StokesMatMult(Mat, Vec, Vec);
 PetscErrorCode StokesMatMultSchur(Mat, Vec, Vec);
+PetscErrorCode StokesMatGetDiagonalSchur(Mat, Vec);
 PetscErrorCode StokesMatMultPV(Mat, Vec, Vec);
 PetscErrorCode StokesMatMultVP(Mat, Vec, Vec);
 PetscErrorCode StokesMatMultVV(Mat, Vec, Vec);
@@ -289,6 +290,7 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     ierr = VecDuplicate(c->vG0, &c->massLump);CHKERRQ(ierr);
     ierr = MatCreateShell(comm, m, m, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatSchur);CHKERRQ(ierr);
     ierr = MatShellSetOperation(c->MatSchur, MATOP_MULT, (void(*)(void))StokesMatMultSchur);CHKERRQ(ierr);
+    ierr = MatShellSetOperation(c->MatSchur, MATOP_GET_DIAGONAL, (void(*)(void))StokesMatGetDiagonalSchur);CHKERRQ(ierr);
     ierr = MatCreateShell(comm, m, n, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatPV);CHKERRQ(ierr);
     ierr = MatShellSetOperation(c->MatPV, MATOP_MULT, (void(*)(void))StokesMatMultPV);CHKERRQ(ierr);
     ierr = MatCreateShell(comm, n, m, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatVP);CHKERRQ(ierr);
@@ -299,7 +301,7 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     ierr = KSPCreate(comm, &c->KSPSchur);CHKERRQ(ierr);
     ierr = KSPSetOperators(c->KSPSchur, c->MatSchur, c->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
     ierr = KSPGetPC(c->KSPSchur, &pc);CHKERRQ(ierr);
-    ierr = PCSetType(pc, PCNONE);CHKERRQ(ierr);
+    ierr = PCSetType(pc, PCJACOBI);CHKERRQ(ierr);
     ierr = KSPSetOptionsPrefix(c->KSPSchur, "schur_");CHKERRQ(ierr);
     ierr = KSPSetFromOptions(c->KSPSchur);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPVelocity);CHKERRQ(ierr);
@@ -500,6 +502,24 @@ PetscErrorCode StokesMatMultSchur(Mat A, Vec xG, Vec yG)
   ierr = KSPSolve(ctx->KSPSchurVelocity, ctx->vG0, ctx->vG1);CHKERRQ(ierr);
   ierr = MatMult(ctx->MatPV, ctx->vG1, yG);CHKERRQ(ierr);
   ierr = VecScale(yG, -1.0);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesMatGetDiagonalSchur"
+// We actually don't have any idea what is on the diagonal.  Putting the inverse
+// viscosity here allows Jacobi preconditioning to partially correct for large
+// viscosity variations.
+PetscErrorCode StokesMatGetDiagonalSchur(Mat S, Vec y)
+{
+  StokesCtx      *ctx;
+  PetscErrorCode  ierr;
+
+  PetscFunctionBegin;
+  ierr = MatShellGetContext(S, (void **)&ctx);CHKERRQ(ierr);
+  ierr = VecScatterBegin(ctx->scatterLP, ctx->eta, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(ctx->scatterLP, ctx->eta, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecReciprocal(y);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
