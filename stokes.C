@@ -30,7 +30,7 @@ typedef struct { // For higher dimensions, use a different value of `3'
 
 typedef struct {
   PetscInt       debug, cont0, cont;
-  PetscReal      hardness, exponent, regularization, gamma0, scaleM, scaleN;
+  PetscReal      hardness, exponent, regularization, gamma0, scaleM, scaleN, reynolds;
   Rheology       rheology;
   ExactSolution  exact;
   BdyFunc        boundary;
@@ -84,7 +84,8 @@ PetscErrorCode StokesPressureReduceOrder(Vec u, StokesCtx *c);
 PetscErrorCode StokesMixedApply(StokesCtx *, Vec vL, Vec *stressL, Vec xL);
 PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
-PetscErrorCode StokesPCApply(void *, Vec, Vec);
+PetscErrorCode StokesPCApply0(void *, Vec, Vec);
+PetscErrorCode StokesPCApply1(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp0(void *);  // simple finite difference
 PetscErrorCode StokesPCSetUp1(void *); // Q1 finite element
 PetscErrorCode StokesPCSetUp2(void *); // some matrix entries from spectral matrix
@@ -169,7 +170,16 @@ int main(int argc,char **args)
       default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
     }
   }
-  ierr = PCShellSetApply(pc, StokesPCApply);CHKERRQ(ierr);
+  {
+    PetscInt t;
+    ierr = PetscOptionsGetInt(PETSC_NULL, "-pc_saddle_type", &t, &flag);CHKERRQ(ierr);
+    if (!flag) t = 0;
+    switch (t) {
+      case 0: ierr = PCShellSetApply(pc, StokesPCApply0);CHKERRQ(ierr); break; // Full block LU saddle preconditioner
+      case 1: ierr = PCShellSetApply(pc, StokesPCApply1);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
+      default: SETERRQ1(1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
+    }
+  }
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
 
   // u = exact solution, u2 = A(u) u (used as forcing term)
@@ -298,10 +308,11 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     ierr = MatCreateShell(comm, n, n, PETSC_DECIDE, PETSC_DECIDE, c, &c->MatVV);CHKERRQ(ierr);
     ierr = MatShellSetOperation(c->MatVV, MATOP_MULT, (void(*)(void))StokesMatMultVV);CHKERRQ(ierr);
     ierr = MatCreateSeqAIJ(comm, n, n, 1+2*d, PETSC_NULL, &c->MatVVPC);CHKERRQ(ierr);
+    ierr = MatSetFromOptions(c->MatVVPC);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPSchur);CHKERRQ(ierr);
     ierr = KSPSetOperators(c->KSPSchur, c->MatSchur, c->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
     ierr = KSPGetPC(c->KSPSchur, &pc);CHKERRQ(ierr);
-    ierr = PCSetType(pc, PCJACOBI);CHKERRQ(ierr);
+    ierr = PCSetType(pc, PCJACOBI);CHKERRQ(ierr); // diagonal scaling from viscosity
     ierr = KSPSetOptionsPrefix(c->KSPSchur, "schur_");CHKERRQ(ierr);
     ierr = KSPSetFromOptions(c->KSPSchur);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPVelocity);CHKERRQ(ierr);
@@ -1667,8 +1678,8 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
 }
 
 #undef __FUNCT__
-#define __FUNCT__ "StokesPCApply"
-PetscErrorCode StokesPCApply(void *void_ctx, Vec x, Vec y)
+#define __FUNCT__ "StokesPCApply0"
+PetscErrorCode StokesPCApply0(void *void_ctx, Vec x, Vec y)
 {
   StokesCtx *c = (StokesCtx *)void_ctx;
   PetscErrorCode ierr;
@@ -1693,6 +1704,29 @@ PetscErrorCode StokesPCApply(void *void_ctx, Vec x, Vec y)
   ierr = VecScatterBegin(c->scatterVG, c->vG1, y, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterVG, c->vG1, y, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCApply1"
+PetscErrorCode StokesPCApply1(void *void_ctx, Vec x, Vec y)
+{
+  StokesCtx *c = (StokesCtx *)void_ctx;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecScatterBegin(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = MatMult(c->MatVP, c->pG1, c->vG0);CHKERRQ(ierr);
+  ierr = VecScale(c->vG0, -1.0);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterGV, x, c->vG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterGV, x, c->vG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 

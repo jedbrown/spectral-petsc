@@ -164,8 +164,8 @@ int main(int argc,char **args)
     // ierr = MatSetSizes(P, m, n, m, n); CHKERRQ(ierr);
     // ierr = MatSetType(P, MATUMFPACK); CHKERRQ(ierr);
     // ierr = MatPreallocateInitialize(PETSC_COMM_SELF, m, n, &dnz, &onz); CHKERRQ(ierr);
-    // ierr = MatSetFromOptions(P); CHKERRQ(ierr);
     ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m, n, 1+2*ac->d, PETSC_NULL, &P); CHKERRQ(ierr);
+    ierr = MatSetFromOptions(P);CHKERRQ(ierr);
   }
 
   //ierr = VecPrint2(ac->x, m, n*2, "coordinates"); CHKERRQ(ierr);
