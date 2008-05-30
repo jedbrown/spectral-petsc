@@ -86,6 +86,7 @@ PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
 PetscErrorCode StokesPCApply0(void *, Vec, Vec);
 PetscErrorCode StokesPCApply1(void *, Vec, Vec);
+PetscErrorCode StokesPCApply2(void *, Vec, Vec);
 PetscErrorCode StokesPCSetUp0(void *);  // simple finite difference
 PetscErrorCode StokesPCSetUp1(void *); // Q1 finite element
 PetscErrorCode StokesPCSetUp2(void *); // some matrix entries from spectral matrix
@@ -177,6 +178,7 @@ int main(int argc,char **args)
     switch (t) {
       case 0: ierr = PCShellSetApply(pc, StokesPCApply0);CHKERRQ(ierr); break; // Full block LU saddle preconditioner
       case 1: ierr = PCShellSetApply(pc, StokesPCApply1);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
+      case 2: ierr = PCShellSetApply(pc, StokesPCApply2);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
       default: SETERRQ1(1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
     }
   }
@@ -223,7 +225,12 @@ int main(int argc,char **args)
       ierr = PetscPrintf(comm, "%-25s: abs = %8e\n", "Norm of error", norm);CHKERRQ(ierr);
     }
   }
-  ierr = StokesStateView(ctx, x, "final state");CHKERRQ(ierr);
+  {
+    ierr = PetscOptionsHasName(PETSC_NULL, "-output_vtk", &flag);CHKERRQ(ierr);
+    if (flag) {
+      ierr = StokesStateView(ctx, x, "final state");CHKERRQ(ierr);
+    }
+  }
 
   ierr = SNESDestroy(snes);CHKERRQ(ierr);
   ierr = StokesDestroy(ctx);CHKERRQ(ierr);
@@ -1679,6 +1686,8 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCApply0"
+// A symmetric preconditioner based on a block LU decomposition.  If applied
+// exactly, this is a direct method.
 PetscErrorCode StokesPCApply0(void *void_ctx, Vec x, Vec y)
 {
   StokesCtx *c = (StokesCtx *)void_ctx;
@@ -1709,6 +1718,8 @@ PetscErrorCode StokesPCApply0(void *void_ctx, Vec x, Vec y)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCApply1"
+// A block triangular preconditioner.  If applied exactly, the preconditioned
+// matrix has two distinct eigenvalues
 PetscErrorCode StokesPCApply1(void *void_ctx, Vec x, Vec y)
 {
   StokesCtx *c = (StokesCtx *)void_ctx;
@@ -1727,6 +1738,29 @@ PetscErrorCode StokesPCApply1(void *void_ctx, Vec x, Vec y)
   ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCApply2"
+// A block diagonal preconditioner.  If applied exactly, the preconditioned
+// matrix has three distinct eigenvalues.
+PetscErrorCode StokesPCApply2(void *void_ctx, Vec x, Vec y)
+{
+  StokesCtx *c = (StokesCtx *)void_ctx;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = VecScatterBegin(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
