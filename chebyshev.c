@@ -36,6 +36,7 @@ PetscErrorCode MatCreateChebD1(MPI_Comm comm, Vec vx, Vec vy, unsigned flag, Mat
 #define __FUNCT__ "ChebD1Mult"
 PetscErrorCode ChebD1Mult(Mat A, Vec vx, Vec vy) {
   PetscErrorCode ierr;
+  PetscInt i;
   double *x, *y;
   ChebD1Ctx *c;
 
@@ -47,7 +48,7 @@ PetscErrorCode ChebD1Mult(Mat A, Vec vx, Vec vy) {
   int n = c->n - 1; // Gauss-Lobatto-Chebyshev points are numbered from [0..n]
 
   fftw_execute_r2r(c->p_forward, x, c->work);
-  for (int i = 1; i < n; i++) c->work[i] *= (double)i;
+  for (i = 1; i < n; i++) c->work[i] *= (double)i;
 
   fftw_execute_r2r(c->p_backward, c->work + 1, y + 1);
 
@@ -56,7 +57,7 @@ PetscErrorCode ChebD1Mult(Mat A, Vec vx, Vec vy) {
   y[0] = 0.0;
   y[n] = 0.0;
   double s = 1.0;
-  for (int i = 1; i < n; i++) {
+  for (i = 1; i < n; i++) {
     double I = (double)i;
     y[i] /= 2.0 * n * sqrt(1.0 - PetscSqr(cos(I * pin)));
     y[0] += I * c->work[i];
@@ -89,7 +90,7 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dim, unsigned
                              Vec vx, Vec vy, Mat *A) {
   PetscErrorCode ierr;
   ChebCtx *c;
-  int n;
+  int n, r, ri, stride;
   double *x, *y;
 
   PetscFunctionBegin;
@@ -103,8 +104,8 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dim, unsigned
   c->tr = tr;
 
   if (!(0 <= tr && tr < rank)) SETERRQ(PETSC_ERR_USER, "tdim out of range");
-  int stride = 1;
-  for (int r = rank-1, ri=rank-2; r >= 0; r--) {
+  stride = 1;
+  for (r = rank-1, ri=rank-2; r >= 0; r--) {
     fftw_iodim *iod;
     if (r == tr) {
       iod = &(c->tdim);
@@ -141,6 +142,8 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dim, unsigned
 PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
   PetscErrorCode ierr;
   double *x, *y;
+  bool done;
+  int i;
   ChebCtx *c;
 
   PetscFunctionBegin;
@@ -156,13 +159,13 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
   double N = (double)n;
   ierr = PetscMemzero(ind, (c->rank - 1) * sizeof(int)); CHKERRQ(ierr);
   int offset = 0;
-  for (bool done = false; !done; ) {
+  for (done = false; !done; ) {
     int ix0 = offset;
     int ixn = offset + n * c->tdim.is;
     y[ix0] = 0.0;
     y[ixn] = 0.0;
     double s = 1.0;
-    for (int i = 1; i < n; i++) {
+    for (i = 1; i < n; i++) {
       int ix = offset + i * c->tdim.is;
       double I = (double)i;
       c->work[ix] *= I;
@@ -180,8 +183,8 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
   double pin = PI / N;
   ierr = PetscMemzero(ind, (c->rank - 1) * sizeof(int)); CHKERRQ(ierr);
   offset = 0;
-  for (bool done = false; !done; ) {
-    for (int i = 1; i < n; i++) {
+  for (done = false; !done; ) {
+    for (i = 1; i < n; i++) {
       int ix = offset + i * c->tdim.is;
       double I = (double)i;
       y[ix] /= 2 * n * sqrt(1.0 - PetscSqr(cos(I * pin)));
@@ -197,11 +200,11 @@ PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy) {
 
 
 void perform_carry(ChebCtx *c, int *ind, int *offset, bool *done) {
-  int carry;
+  int carry, i;
 
   *offset = 0;
   carry = 1;
-  for (int i = c->rank-2; i >= 0; i--) {
+  for (i = c->rank-2; i >= 0; i--) {
     ind[i] += carry;
     if (ind[i] < c->dim[i].n) {
       carry = 0;

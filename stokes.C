@@ -546,7 +546,6 @@ PetscErrorCode StokesMatGetDiagonalSchur(Mat S, Vec y)
 PetscErrorCode StokesMatMultPV(Mat A, Vec xG, Vec yG) // divergence of velocity
 {
   StokesCtx      *ctx;
-  PetscReal     **u, *v;
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
@@ -559,7 +558,6 @@ PetscErrorCode StokesMatMultPV(Mat A, Vec xG, Vec yG) // divergence of velocity
 #define __FUNCT__ "StokesDivergence"
 PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscTruth withDirichlet, Vec xG, Vec yG) // divergence of velocity
 {
-  PetscReal     **u, *v;
   PetscErrorCode  ierr;
 
   ierr = VecZeroEntries(ctx->workV[0]);CHKERRQ(ierr);
@@ -752,7 +750,6 @@ PetscErrorCode StokesFunction(SNES snes, Vec xG, Vec yG, void *ctx)
 #define __FUNCT__ "StokesJacobian"
 PetscErrorCode StokesJacobian(SNES snes, Vec w, Mat *Ashell, Mat *Pshell, MatStructure *flag, void *void_ctx)
 {
-  PetscErrorCode ierr;
 
   PetscFunctionBegin;
   // The nonlinear term has already been fixed up by StokesFunction() so we do nothing here.
@@ -767,7 +764,6 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   MPI_Comm             comm = c->comm;
   PetscInt             d    = c->numDims, *dim = c->dim, m = productInt(d, dim), n = d*m, N=n+m;
   StokesBoundaryMixed *mixed;
-  IS                   isG, isD;
   PetscInt            *ixLP, *ixPL, *ixLV, *ixVL, *ixLD, *ixDL, *ixPG, *ixGP, *ixVG, *ixGV;
   PetscInt             lp, lv, gp, gv, dv, g, im;
   PetscReal           *v, *w, *x;
@@ -1156,7 +1152,6 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
   PetscInt       d = ctx->numDims, *dim = ctx->dim;
   PetscReal     *x, *eta, *deta, **strain;
   PetscInt      *ixL;
-  PetscTruth     flg;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
@@ -1168,7 +1163,7 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
   {
     PetscInt row, col[2*d+1], c, im=0;
     PetscScalar v[2*d+1];
-    PetscScalar x0, xMM, xPP, xM, idxM, xP, idxP, idx, eM, deM, du0M, eP, deP, du0P;
+    PetscScalar x0, xMM, xPP, xM, idxM, xP, idxP, idx, eM, deM, eP, deP;
     for (BlockIt it = BlockIt(d, dim); !it.done; it.next()) { // loop over local dof
       const PetscInt i = it.i;
       if (im < ctx->numMixed && i == ctx->mixed[im].localIndex) { // we are at a mixed boundary node
@@ -1237,13 +1232,13 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
 {
 #define ORDER 3
 #if (ORDER == 2)
-  const PetscReal qpoint[2]   = { -0.57735026918962573, 0.57735026918962573 };
+  //const PetscReal qpoint[2]   = { -0.57735026918962573, 0.57735026918962573 };
   const PetscReal qweight[2]  = { 1.0, 1.0 };
   const PetscReal basis[2][2] = {{0.78867513459481287, 0.21132486540518708}, {0.21132486540518708, 0.78867513459481287}};
   const PetscReal deriv[2][2] = {{-0.5, -0.5}, {0.5, 0.5}};
   const PetscInt  qdim[]      = {2,2,2,2,2}; // 2 quadrature points in each direction
 #elif (ORDER == 3)
-  const PetscReal qpoint[3]   = {-0.7745966692414834, -2.4651903288156619e-31, 0.7745966692414834};
+  //const PetscReal qpoint[3]   = {-0.7745966692414834, -2.4651903288156619e-31, 0.7745966692414834};
   const PetscReal qweight[3]  = {0.55555555555556, 0.88888888888889, 0.55555555555556};
   const PetscReal basis[2][3] = {{0.887298334621,0.5,0.112701665379},{0.112701665379,0.5,0.887298334621}};
   const PetscReal deriv[2][3] = {{-0.5, -0.5, -0.5},{0.5, 0.5, 0.5}};
@@ -1259,7 +1254,6 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   PetscInt       *ixL;
   PetscInt row[N*d], col[N*d];
   PetscReal A[N*d][N*d], M[N*d][N*d];
-  PetscTruth      flg;
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
@@ -1437,7 +1431,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
 PetscErrorCode StokesPCSetUp2(void *void_ctx)
 {
   StokesCtx *ctx = (StokesCtx *)void_ctx;
-  PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d,dim), m = d*(4*d+1);
+  PetscInt d = ctx->numDims, *dim = ctx->dim, m = d*(4*d+1);
   PetscInt n, row, col[m];
   PetscInt *ixL;
   PetscScalar values[m];
@@ -1508,7 +1502,6 @@ PetscErrorCode StokesPCSetUp3(void *void_ctx)
   PetscInt       d = ctx->numDims, *dim = ctx->dim;
   PetscReal     *x, *Eta, *dEta, **Strain;
   PetscInt      *ixL;
-  PetscTruth     flg;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
@@ -1526,10 +1519,10 @@ PetscErrorCode StokesPCSetUp3(void *void_ctx)
       if (true) { // We are at an interior or Dirichlet node
         if (ixL[node.i*d+0] < 0) continue;
         if (ixL[node.i*d+1] < 0) continue;
-        const PetscReal J[2][2] = { x[node.shift(0,1)*d+0] - x[node.shift(0,-1)*d+0],
-                                    x[node.shift(0,1)*d+1] - x[node.shift(0,-1)*d+1],
-                                    x[node.shift(1,1)*d+0] - x[node.shift(1,-1)*d+0],
-                                    x[node.shift(1,1)*d+1] - x[node.shift(1,-1)*d+1] };
+        const PetscReal J[2][2] = { { x[node.shift(0,1)*d+0] - x[node.shift(0,-1)*d+0],
+                                      x[node.shift(0,1)*d+1] - x[node.shift(0,-1)*d+1] },
+                                    { x[node.shift(1,1)*d+0] - x[node.shift(1,-1)*d+0],
+                                      x[node.shift(1,1)*d+1] - x[node.shift(1,-1)*d+1] } };
         const PetscReal iJdet = 1.0 / (J[0][0]*J[1][1] - J[0][1]*J[1][0]);
         const PetscReal Jinv[2*2] = { iJdet*J[1][1], -iJdet*J[0][1], -iJdet*J[1][0], iJdet*J[0][0] };
         ierr = StokesComputeNodalJacobian(node, Jinv, x, Eta, dEta, Strain, nodeJac);CHKERRQ(ierr);
@@ -1581,7 +1574,6 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
   using namespace CppAD;
   const PetscInt d = node.numDims(), S = 2*d+1;
   vector< AD<double> > vel(S*d), residual(d), flux(S*d*d);
-  PetscErrorCode ierr;
 
   PetscFunctionBegin;
   Independent(vel);
@@ -1963,7 +1955,6 @@ PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, Pets
 #define __FUNCT__ "StokesExact3"
 PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, PetscReal *rhs, void *ctx)
 {
-  const PetscReal eta = 1.0;
   PetscReal u, v, p;
 
   PetscFunctionBegin;
@@ -2087,7 +2078,6 @@ PetscErrorCode StokesBoundary2(PetscInt d, PetscReal *coord, PetscReal *normal, 
 PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
 {
   bool                    inside;
-  PetscErrorCode          ierr;
 
   PetscFunctionBegin;
   inside = false;
@@ -2116,8 +2106,6 @@ PetscErrorCode StokesBoundary3(PetscInt d, PetscReal *coord, PetscReal *normal, 
 #define __FUNCT__ "StokesBoundary4"
 PetscErrorCode StokesBoundary4(PetscInt d, PetscReal *coord, PetscReal *normal, BdyType *type, PetscReal *value, void *void_ctx)
 {
-  bool                    inside;
-  PetscErrorCode          ierr;
 
   PetscFunctionBegin;
   *type = DIRICHLET;

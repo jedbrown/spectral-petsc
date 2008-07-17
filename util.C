@@ -19,7 +19,7 @@ class BlockIt {
     i = 0;
     done = s == 0;
   }
-  BlockIt(const BlockIt &it) : d(it.d), i(it.i), done(it.done) {
+  BlockIt(const BlockIt &it) : done(it.done), i(it.i), d(it.d) {
     dim = new int[d]; stride = new int[d]; ind = new int[d];
     for (int i=0; i < d; i++) {
       dim[i]    = it.dim[i];
@@ -128,9 +128,7 @@ void zeroInt(int d, int v[]) {
 #define __FUNCT__ "polyInterp"
 PetscErrorCode polyInterp(const PetscInt n, const PetscReal *x, PetscScalar *w, const PetscReal x0, const PetscReal x1, PetscScalar *f0, PetscScalar *f1)
 {
-  PetscScalar *tmp;
   PetscInt o, e;
-  PetscReal y;
 
   PetscFunctionBegin;
   for (int di=1; di < n; di++) { // offset (column of table)

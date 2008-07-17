@@ -5,6 +5,8 @@
 #include <fftw3.h>
 #include <petscmat.h>
 
+PETSC_EXTERN_CXX_BEGIN
+
 #define PI 3.14159265358979323846
 
 typedef struct {
@@ -30,5 +32,7 @@ PetscErrorCode MatCreateCheb(MPI_Comm comm, int rank, int tr, int *dims, unsigne
                               Vec vx, Vec vy, Mat *A);
 PetscErrorCode ChebMult(Mat A, Vec vx, Vec vy);
 PetscErrorCode ChebDestroy (Mat A);
+
+PETSC_EXTERN_CXX_END
 
 #endif // CHEBYSHEV_H
