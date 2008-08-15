@@ -5,6 +5,7 @@ CFLAGS+= ${PROF}
 ETAGS= etags.emacs
 include ${PETSC_DIR}/conf/base
 #include ${PETSC_DIR}/bmake/common/base
+CLINKER= mpicxx
 
 nk : nk.o chkopts
 	${CLINKER} -o nk nk.o ${PETSC_LIB}

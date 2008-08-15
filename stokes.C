@@ -29,8 +29,8 @@ typedef struct { // For higher dimensions, use a different value of `3'
 } StokesBoundaryMixed;
 
 typedef struct {
-  PetscInt       debug, cont0, cont;
-  PetscReal      hardness, exponent, regularization, gamma0, scaleM, scaleN, reynolds;
+  PetscInt       debug, cont0, cont, zeroN;
+  PetscReal      hardness, exponent, regularization, gamma0, scaleM, scaleN, reynolds, zeroV;
   Rheology       rheology;
   ExactSolution  exact;
   BdyFunc        boundary;
@@ -393,7 +393,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   ierr = PetscMalloc(ctx->numDims*sizeof(PetscInt), &ctx->dim);CHKERRQ(ierr);
   exact = 0; boundary = 0; rheology = 0;
   opt->debug = 0; opt->hardness = 1.0; opt->exponent = 1.0; opt->regularization = 1.0; opt->gamma0 = 1.0; opt->cont0 = 0; opt->cont = 1;
-  opt->scaleM = 1.0; opt->scaleN = 1.0;
+  opt->scaleM = 1.0; opt->scaleN = 1.0; opt->zeroN = 0; opt->zeroV = 1.0;
   ierr = PetscOptionsBegin(comm, "", "Stokes problem options", "");CHKERRQ(ierr);
   ierr = PetscOptionsIntArray("-dim", "list of dimension extent", "stokes.C", ctx->dim, &ctx->numDims, &flag);CHKERRQ(ierr);
   if (!flag) { ctx->numDims = 2; ctx->dim[0] = 8; ctx->dim[1] = 6; }
@@ -409,6 +409,8 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
   ierr = PetscOptionsInt("-cont", "number of continuations", "stokes.C", opt->cont, &opt->cont, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-scaleM", "scaling factor for Mixed condition", "stokes.C", opt->scaleM, &opt->scaleM, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-scaleN", "scaling factor for Neumann condition", "stokes.C", opt->scaleN, &opt->scaleN, PETSC_NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-zeroN", "number of rows to zero", "stokes.C", opt->zeroN, &opt->zeroN, PETSC_NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-zeroV", "value to put on diagonal", "stokes.C", opt->zeroV, &opt->zeroV, PETSC_NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
 
   ierr = PetscPrintf(comm, "Stokes problem");CHKERRQ(ierr);
@@ -1399,6 +1401,20 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
       for (int j=0; j < N*d; j++) {
         if (col[j] < 0) continue;
         lump[row[i]] += M[i][j];
+      }
+    }
+
+    if (ctx->options->zeroN) { // filter the rows and columns to produce a symmetric matrix with some points fixed
+      for (int i=0; i<d*N; i++) {
+        if (row[i] < ctx->options->zeroN) {
+          for (int j=0; j<d*N; j++) {
+            if (col[j] == row[i]) {
+              A[i][j] = ctx->options->zeroV;
+            } else {
+              A[i][j] = A[j][i] = 0.0;
+            }
+          }
+        }
       }
     }
     ierr = MatSetValues(ctx->MatVVPC, d*N, row, d*N, col, &A[0][0], ADD_VALUES);CHKERRQ(ierr);
