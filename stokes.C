@@ -178,7 +178,7 @@ int main(int argc,char **args)
     switch (t) {
       case 0: ierr = PCShellSetApply(pc, StokesPCApply0);CHKERRQ(ierr); break; // Full block LU saddle preconditioner
       case 1: ierr = PCShellSetApply(pc, StokesPCApply1);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
-      case 2: ierr = PCShellSetApply(pc, StokesPCApply2);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
+      case 2: ierr = PCShellSetApply(pc, StokesPCApply2);CHKERRQ(ierr); break; // Block diagonal saddle preconditioner
       default: SETERRQ1(1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
     }
   }
@@ -201,7 +201,13 @@ int main(int argc,char **args)
       //ierr = VecView(r, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);printf("\n");
     }
   }
-  ierr = MatNullSpaceTest(ns, A);CHKERRQ(ierr);
+  {
+    PetscTruth isNull;
+    ierr = MatNullSpaceTest(ns, A, &isNull);CHKERRQ(ierr);
+    if (!isNull) {
+      SETERRQ(1,"Null space test failed");
+    }
+  }
 
   if (true) {
     PetscReal exponent = opt->exponent;
@@ -1150,11 +1156,11 @@ PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL)
 #define __FUNCT__ "StokesPCSetUp0"
 PetscErrorCode StokesPCSetUp0(void *void_ctx)
 {
-  StokesCtx     *ctx = (StokesCtx *)void_ctx;
-  PetscInt       d = ctx->numDims, *dim = ctx->dim;
-  PetscReal     *x, *eta, *deta, **strain;
-  PetscInt      *ixL;
-  PetscErrorCode ierr;
+  StokesCtx      *ctx = (StokesCtx *)void_ctx;
+  PetscInt        d   = ctx->numDims, *dim = ctx->dim;
+  PetscReal      *x, *eta, *deta, **strain;
+  const PetscInt *ixL;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
@@ -1253,7 +1259,7 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   StokesCtx      *ctx         = (StokesCtx *)void_ctx;
   const PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d, ndim);
   PetscReal      *x, *eta, *deta, **strain, *lump;
-  PetscInt       *ixL;
+  const PetscInt *ixL;
   PetscInt row[N*d], col[N*d];
   PetscReal A[N*d][N*d], M[N*d][N*d];
   PetscErrorCode  ierr;
@@ -1446,15 +1452,15 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
 #define __FUNCT__ "StokesPCSetUp2"
 PetscErrorCode StokesPCSetUp2(void *void_ctx)
 {
-  StokesCtx *ctx = (StokesCtx *)void_ctx;
-  PetscInt d = ctx->numDims, *dim = ctx->dim, m = d*(4*d+1);
-  PetscInt n, row, col[m];
-  PetscInt *ixL;
-  PetscScalar values[m];
-  ISColoring iscolor;
-  MatFDColoring fdcolor;
-  MatStructure flag;
-  PetscErrorCode ierr;
+  StokesCtx      *ctx = (StokesCtx *)void_ctx;
+  PetscInt        d   = ctx->numDims, *dim = ctx->dim, m = d*(4*d+1);
+  PetscInt        n, row, col[m];
+  const PetscInt *ixL;
+  PetscScalar     values[m];
+  ISColoring      iscolor;
+  MatFDColoring   fdcolor;
+  MatStructure    flag;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetSize(ctx->vG0, &n);CHKERRQ(ierr);
@@ -1514,11 +1520,11 @@ PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx)
 #define __FUNCT__ "StokesPCSetUp3"
 PetscErrorCode StokesPCSetUp3(void *void_ctx)
 {
-  StokesCtx     *ctx = (StokesCtx *)void_ctx;
-  PetscInt       d = ctx->numDims, *dim = ctx->dim;
-  PetscReal     *x, *Eta, *dEta, **Strain;
-  PetscInt      *ixL;
-  PetscErrorCode ierr;
+  StokesCtx      *ctx = (StokesCtx *)void_ctx;
+  PetscInt        d = ctx->numDims, *dim = ctx->dim;
+  PetscReal      *x, *Eta, *dEta, **Strain;
+  const PetscInt *ixL;
+  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetArray(ctx->eta, &Eta); CHKERRQ(ierr);

@@ -7,7 +7,8 @@ test_range () {
     echo 'cos_scale = ' $cos_scale
     for n in $(seq $2 $3 $4); do
 	printf "%3d: " $n
-	./elliptic -dims $n,$n -exact 0 -cos_scale $cos_scale -gamma 4 -ksp_rtol 1e-12 -snes_rtol 1e-12 | grep 'Norm of error'
+	./elliptic -dim $n,$n -exact 0 -cos_scale $cos_scale -gamma 4 -ksp_rtol 1e-12 -snes_rtol 1e-12 | grep 'Norm of error'
+	#./elliptic -dim $n,$n -exact 0 -cos_scale $cos_scale -gamma 4 -snes_max_it 1 -ksp_type preonly -pc_type lu # | grep 'Norm of error'
     done
 }
 
