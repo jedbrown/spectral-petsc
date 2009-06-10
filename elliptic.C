@@ -539,7 +539,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   AppCtx *ac;
   MatElliptic *c;
   PetscScalar *eta, *deta, **u0_, *x;
-  PetscInt *ixL;
+  const PetscInt *ixL;
 
   PetscFunctionBegin;
   // The nonlinear term has already been fixed up by FormFunction() so we just

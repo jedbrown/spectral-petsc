@@ -84,15 +84,16 @@ PetscErrorCode StokesPressureReduceOrder(Vec u, StokesCtx *c);
 PetscErrorCode StokesMixedApply(StokesCtx *, Vec vL, Vec *stressL, Vec xL);
 PetscErrorCode StokesMixedFilter(StokesCtx *, Vec xL);
 PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL);
-PetscErrorCode StokesPCApply0(void *, Vec, Vec);
-PetscErrorCode StokesPCApply1(void *, Vec, Vec);
-PetscErrorCode StokesPCApply2(void *, Vec, Vec);
-PetscErrorCode StokesPCSetUp0(void *);  // simple finite difference
-PetscErrorCode StokesPCSetUp1(void *); // Q1 finite element
-PetscErrorCode StokesPCSetUp2(void *); // some matrix entries from spectral matrix
+PetscErrorCode StokesPCApply0(PC, Vec, Vec);
+PetscErrorCode StokesPCApply1(PC, Vec, Vec);
+PetscErrorCode StokesPCApply2(PC, Vec, Vec);
+PetscErrorCode StokesPCApply3(PC, Vec, Vec);
+PetscErrorCode StokesPCSetUp0(PC);  // simple finite difference
+PetscErrorCode StokesPCSetUp1(PC); // Q1 finite element
+PetscErrorCode StokesPCSetUp2(PC); // some matrix entries from spectral matrix
 PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx);
 #if (WITH_CPPAD)
-PetscErrorCode StokesPCSetUp3(void *); // finite difference with CppAD
+PetscErrorCode StokesPCSetUp3(PC); // finite difference with CppAD
 #endif
 PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *Jinv, const PetscReal *x, const PetscReal *Eta, const PetscReal *dEta, PetscReal **Strain, PetscReal *nodeJac);
 PetscErrorCode StokesSchurMatMult(Mat, Vec, Vec);
@@ -179,6 +180,7 @@ int main(int argc,char **args)
       case 0: ierr = PCShellSetApply(pc, StokesPCApply0);CHKERRQ(ierr); break; // Full block LU saddle preconditioner
       case 1: ierr = PCShellSetApply(pc, StokesPCApply1);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
       case 2: ierr = PCShellSetApply(pc, StokesPCApply2);CHKERRQ(ierr); break; // Block diagonal saddle preconditioner
+      case 3: ierr = PCShellSetApply(pc, StokesPCApply3);CHKERRQ(ierr); break; // Lower triangular saddle preconditioner
       default: SETERRQ1(1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
     }
   }
@@ -210,11 +212,12 @@ int main(int argc,char **args)
   }
 
   if (true) {
-    PetscReal exponent = opt->exponent;
+    PetscReal exponent = opt->exponent,regularization = opt->regularization;
     ierr = VecSet(x, 0.0);CHKERRQ(ierr);
     for (int i = opt->cont0; i < opt->cont+1; i++) {
       opt->exponent = 1.0 + pow(1.0*i/opt->cont, 0.8) * (exponent - 1.0);
-      ierr = PetscPrintf(comm, "## [%d/%d] Solving with exponent = %f\n", i, opt->cont, opt->exponent);CHKERRQ(ierr);
+      opt->regularization = exp(log(regularization) * i/opt->cont);
+      ierr = PetscPrintf(comm, "## [%d/%d] Solving with exponent = %5f regularization %8.2e\n",i,opt->cont,opt->exponent,opt->regularization);CHKERRQ(ierr);
       ierr = SNESSolve(snes, PETSC_NULL, x);CHKERRQ(ierr);
       ierr = VecCopy(x, r);CHKERRQ(ierr);
       ierr = VecAXPY(r, -1.0, u);CHKERRQ(ierr);
@@ -1154,15 +1157,18 @@ PetscErrorCode StokesMixedVelocity(StokesCtx *c, Vec vL)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp0"
-PetscErrorCode StokesPCSetUp0(void *void_ctx)
+PetscErrorCode StokesPCSetUp0(PC pc)
 {
-  StokesCtx      *ctx = (StokesCtx *)void_ctx;
-  PetscInt        d   = ctx->numDims, *dim = ctx->dim;
+  StokesCtx      *ctx;
+  PetscInt        d,*dim;
   PetscReal      *x, *eta, *deta, **strain;
   const PetscInt *ixL;
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
+  ierr = PCShellGetContext(pc,(void**)&ctx);CHKERRQ(ierr);
+  d = ctx->numDims;
+  dim = ctx->dim;
   ierr = VecGetArray(ctx->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(ctx->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArrays(ctx->strain, d, &strain); CHKERRQ(ierr);
@@ -1236,7 +1242,7 @@ PetscErrorCode StokesPCSetUp0(void *void_ctx)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp1"
-PetscErrorCode StokesPCSetUp1(void *void_ctx)
+PetscErrorCode StokesPCSetUp1(PC pc)
 {
 #define ORDER 3
 #if (ORDER == 2)
@@ -1256,13 +1262,14 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
   const PetscInt  qdim[]      = {3,3,3,3,3};
 #endif
   const PetscInt ndim[]       = {2,2,2,2,2}; // 2 nodes in each direction within each element
-  StokesCtx      *ctx         = (StokesCtx *)void_ctx;
+  PetscErrorCode  ierr;
+  StokesCtx      *ctx;
+  ierr = PCShellGetContext(pc,(void**)&ctx);CHKERRQ(ierr);
   const PetscInt d = ctx->numDims, *dim = ctx->dim, N = productInt(d, ndim);
   PetscReal      *x, *eta, *deta, **strain, *lump;
   const PetscInt *ixL;
   PetscInt row[N*d], col[N*d];
   PetscReal A[N*d][N*d], M[N*d][N*d];
-  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecZeroEntries(ctx->massLump);CHKERRQ(ierr);
@@ -1450,9 +1457,11 @@ PetscErrorCode StokesPCSetUp1(void *void_ctx)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp2"
-PetscErrorCode StokesPCSetUp2(void *void_ctx)
+PetscErrorCode StokesPCSetUp2(PC pc)
 {
-  StokesCtx      *ctx = (StokesCtx *)void_ctx;
+  PetscErrorCode  ierr;
+  StokesCtx      *ctx;
+  ierr = PCShellGetContext(pc,(void**)&ctx);CHKERRQ(ierr);
   PetscInt        d   = ctx->numDims, *dim = ctx->dim, m = d*(4*d+1);
   PetscInt        n, row, col[m];
   const PetscInt *ixL;
@@ -1460,7 +1469,6 @@ PetscErrorCode StokesPCSetUp2(void *void_ctx)
   ISColoring      iscolor;
   MatFDColoring   fdcolor;
   MatStructure    flag;
-  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetSize(ctx->vG0, &n);CHKERRQ(ierr);
@@ -1518,13 +1526,14 @@ PetscErrorCode StokesColorFunction(void *dummy, Vec x, Vec y, void *void_ctx)
 #if (WITH_CPPAD)
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCSetUp3"
-PetscErrorCode StokesPCSetUp3(void *void_ctx)
+PetscErrorCode StokesPCSetUp3(PC pc)
 {
-  StokesCtx      *ctx = (StokesCtx *)void_ctx;
+  PetscErrorCode  ierr;
+  StokesCtx      *ctx;
+  ierr = PCShellGetContext(pc,(void**)&ctx);CHKERRQ(ierr);
   PetscInt        d = ctx->numDims, *dim = ctx->dim;
   PetscReal      *x, *Eta, *dEta, **Strain;
   const PetscInt *ixL;
-  PetscErrorCode  ierr;
 
   PetscFunctionBegin;
   ierr = VecGetArray(ctx->eta, &Eta); CHKERRQ(ierr);
@@ -1702,12 +1711,13 @@ PetscErrorCode StokesComputeNodalJacobian(const BlockIt node, const PetscReal *J
 #define __FUNCT__ "StokesPCApply0"
 // A symmetric preconditioner based on a block LU decomposition.  If applied
 // exactly, this is a direct method.
-PetscErrorCode StokesPCApply0(void *void_ctx, Vec x, Vec y)
+PetscErrorCode StokesPCApply0(PC pc, Vec x, Vec y)
 {
-  StokesCtx *c = (StokesCtx *)void_ctx;
+  StokesCtx *c;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
+  ierr = PCShellGetContext(pc,(void**)&c);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
@@ -1732,20 +1742,21 @@ PetscErrorCode StokesPCApply0(void *void_ctx, Vec x, Vec y)
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesPCApply1"
-// A block triangular preconditioner.  If applied exactly, the preconditioned
-// matrix has two distinct eigenvalues
-PetscErrorCode StokesPCApply1(void *void_ctx, Vec x, Vec y)
+// A block upper triangular preconditioner.  If applied exactly as a right preconditioner, the preconditioned matrix has
+// only unit eigenvalues.
+PetscErrorCode StokesPCApply1(PC pc, Vec x, Vec y)
 {
-  StokesCtx *c = (StokesCtx *)void_ctx;
+  StokesCtx *c;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
+  ierr = PCShellGetContext(pc,(void**)&c);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr); // p1 <- S^{-1} p0
   ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
-  ierr = MatMult(c->MatVP, c->pG1, c->vG0);CHKERRQ(ierr);
-  ierr = VecScale(c->vG0, -1.0);CHKERRQ(ierr);
+  ierr = MatMult(c->MatVP, c->pG1, c->vG0);CHKERRQ(ierr); // v0 <- B^T p1
+  ierr = VecScale(c->vG0, -1.0);CHKERRQ(ierr);            // v0 <- -v0
   ierr = VecScatterBegin(c->scatterGV, x, c->vG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGV, x, c->vG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
@@ -1759,12 +1770,13 @@ PetscErrorCode StokesPCApply1(void *void_ctx, Vec x, Vec y)
 #define __FUNCT__ "StokesPCApply2"
 // A block diagonal preconditioner.  If applied exactly, the preconditioned
 // matrix has three distinct eigenvalues.
-PetscErrorCode StokesPCApply2(void *void_ctx, Vec x, Vec y)
+PetscErrorCode StokesPCApply2(PC pc, Vec x, Vec y)
 {
-  StokesCtx *c = (StokesCtx *)void_ctx;
+  StokesCtx *c;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
+  ierr = PCShellGetContext(pc,(void**)&c);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);
@@ -1774,6 +1786,32 @@ PetscErrorCode StokesPCApply2(void *void_ctx, Vec x, Vec y)
   ierr = VecScatterEnd(c->scatterGP, x, c->pG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);
   ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "StokesPCApply3"
+// A block lower triangular preconditioner.  If applied exactly, the preconditioned
+// matrix has only unit eigenvalues
+PetscErrorCode StokesPCApply3(PC pc, Vec x, Vec y)
+{
+  StokesCtx *c;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = PCShellGetContext(pc,(void**)&c);CHKERRQ(ierr);
+  ierr = VecScatterBegin(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = VecScatterEnd(c->scatterGV, x, c->vG0, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPVelocity, c->vG0, c->vG1);CHKERRQ(ierr);                                 // v1 <- A^{-1} v0
+  ierr = VecScatterBegin(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr); // start sending to output
+  ierr = MatMult(c->MatPV, c->vG1, c->pG0);CHKERRQ(ierr);                                        // p0 <- B v1
+  ierr = VecScale(c->pG0, -1.0);CHKERRQ(ierr);                                                   // p0 <- -p0
+  ierr = VecScatterBegin(c->scatterGP, x, c->pG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);    // add p-forcing
+  ierr = VecScatterEnd(c->scatterGP, x, c->pG0, ADD_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  ierr = KSPSolve(c->KSPSchur, c->pG0, c->pG1);CHKERRQ(ierr);                                    // p1 <- S^{-1} p0
+  ierr = VecScatterBegin(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr); // send to output
+  ierr = VecScatterEnd(c->scatterVG, c->vG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   ierr = VecScatterEnd(c->scatterPG, c->pG1, y, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }

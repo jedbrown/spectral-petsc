@@ -128,7 +128,7 @@ void zeroInt(int d, int v[]) {
 #define __FUNCT__ "polyInterp"
 PetscErrorCode polyInterp(const PetscInt n, const PetscReal *x, PetscScalar *w, const PetscReal x0, const PetscReal x1, PetscScalar *f0, PetscScalar *f1)
 {
-  PetscInt o, e;
+  PetscInt o=0, e;
 
   PetscFunctionBegin;
   for (int di=1; di < n; di++) { // offset (column of table)
