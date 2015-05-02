@@ -109,7 +109,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c);
 PetscErrorCode DirichletBdy(int d, double *x, double *n, BdyCond *bc);
 PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2);
 PetscErrorCode FormFunction(SNES, Vec, Vec, void *);
-PetscErrorCode FormJacobian(SNES, Vec, Mat *, Mat *, MatStructure *, void *);
+PetscErrorCode FormJacobian(SNES, Vec, Mat , Mat , void *);
 PetscErrorCode VecPrint2(Vec, PetscInt, PetscInt, const char *);
 
 #undef __FUNCT__
@@ -127,7 +127,7 @@ int main(int argc,char **args)
   SNESConvergedReason reason;
   PetscErrorCode ierr;
   AppCtx         *ac;
-  PetscTruth     flag;
+  PetscBool      flag;
 
   PetscFunctionBegin;
   //ierr = PetscMallocSetDumpLog(); CHKERRQ(ierr);
@@ -175,7 +175,7 @@ int main(int argc,char **args)
   ierr = VecDuplicate(u, &x);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &ac->b);CHKERRQ(ierr);
   ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
-  ierr = SNESSetJacobian(snes, A, P, FormJacobian, ac);CHKERRQ(ierr);
+  ierr = SNESSetJacobian(snes, A, P, FormJacobian, &ac);CHKERRQ(ierr);
   ierr = SNESSetFunction(snes, r, FormFunction, ac);CHKERRQ(ierr);
   ierr = SNESSetApplicationContext(snes, ac);CHKERRQ(ierr);
   ierr = SNESGetKSP(snes, &ksp);CHKERRQ(ierr);
@@ -231,12 +231,14 @@ int main(int argc,char **args)
   //ierr = VecPrint2(b0, m-2, n-2, "b0"); CHKERRQ(ierr);
 #endif
 
-  ierr = SNESDestroy(snes);CHKERRQ(ierr);
-  ierr = MatDestroy(A);CHKERRQ(ierr);
-  ierr = MatDestroy(P);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr); ierr = VecDestroy(u2);CHKERRQ(ierr);
-  ierr = VecDestroy(x);CHKERRQ(ierr); ierr = VecDestroy(r);CHKERRQ(ierr);
-  ierr = VecDestroy(ac->b);CHKERRQ(ierr);
+  ierr = SNESDestroy(&snes);CHKERRQ(ierr);
+  ierr = MatDestroy(&A);CHKERRQ(ierr);
+  ierr = MatDestroy(&P);CHKERRQ(ierr);
+  ierr = VecDestroy(&u);CHKERRQ(ierr);
+  ierr = VecDestroy(&u2);CHKERRQ(ierr);
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&r);CHKERRQ(ierr);
+  ierr = VecDestroy(&ac->b);CHKERRQ(ierr);
   ierr = PetscFree(ac->dim);CHKERRQ(ierr);
   ierr = PetscFree(ac);CHKERRQ(ierr);
 
@@ -253,7 +255,7 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
 
   PetscFunctionBegin;
   ierr = PetscMalloc(sizeof(MatElliptic), &c); CHKERRQ(ierr);
-  ierr = PetscMalloc2(d, PetscInt, &c->dim, d, Mat, &c->D); CHKERRQ(ierr);
+  ierr = PetscMalloc2(d, &c->dim, d, &c->D); CHKERRQ(ierr);
   c->d = d;
   for (int i=0; i<d; i++) { c->dim[i] = dim[i]; }
   PetscInt m = productInt(d, dim);
@@ -267,6 +269,9 @@ PetscErrorCode MatCreate_Elliptic(MPI_Comm comm, int d, int *dim, unsigned flag,
   ierr = VecSet(c->deta, 0.0); CHKERRQ(ierr);
 
   for (int i=0; i<d; i++) {
+    //ierr = MatCreateCheb(comm, d, i, dim, flag, (&c->w)[0], (&c->w)[1], &c->D[i]); CHKERRQ(ierr);
+    //ierr = MatCreateCheb(comm, d, i, dim, flag, &c->w[0], &c->w[1], &c->D[i]); CHKERRQ(ierr);
+    //ierr = MatCreateCheb(comm, d, i, dim, flag, *(&c->w[0]), *(&c->w[1]), &c->D[i]); CHKERRQ(ierr);
     ierr = MatCreateCheb(comm, d, i, dim, flag, c->w[0], c->w[1], &c->D[i]); CHKERRQ(ierr);
   }
 
@@ -347,21 +352,21 @@ PetscErrorCode MatDestroy_Elliptic (Mat A) {
   PetscFunctionBegin;
   ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   for (int d=0; d < c->d; d++) {
-    ierr = MatDestroy(c->D[d]); CHKERRQ(ierr);
+    ierr = MatDestroy(&c->D[d]); CHKERRQ(ierr);
   }
-  ierr = VecDestroyVecs(c->w, c->nw); CHKERRQ(ierr);
-  ierr = VecDestroyVecs(c->gradu, c->d); CHKERRQ(ierr);
-  ierr = VecDestroy(c->x); CHKERRQ(ierr);
-  ierr = VecDestroy(c->eta); CHKERRQ(ierr);
-  ierr = VecDestroy(c->deta); CHKERRQ(ierr);
-  ierr = VecDestroy(c->dirichlet); CHKERRQ(ierr);
-  ierr = VecDestroy(c->dirichlet0); CHKERRQ(ierr);
-  ierr = ISDestroy(c->isG); CHKERRQ(ierr);
-  ierr = ISDestroy(c->isL); CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterGL); CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterDL); CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterLG); CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterLD); CHKERRQ(ierr);
+  ierr = VecDestroyVecs(c->nw, &c->w); CHKERRQ(ierr);
+  ierr = VecDestroyVecs(c->d, &c->gradu); CHKERRQ(ierr);
+  ierr = VecDestroy(&c->x); CHKERRQ(ierr);
+  ierr = VecDestroy(&c->eta); CHKERRQ(ierr);
+  ierr = VecDestroy(&c->deta); CHKERRQ(ierr);
+  ierr = VecDestroy(&c->dirichlet); CHKERRQ(ierr);
+  ierr = VecDestroy(&c->dirichlet0); CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isG); CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isL); CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterGL); CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterDL); CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterLG); CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterLD); CHKERRQ(ierr);
   ierr = PetscFree2(c->dim, c->D); CHKERRQ(ierr);
   ierr = PetscFree(c);
   PetscFunctionReturn(0);
@@ -379,8 +384,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
   PetscFunctionBegin;
   m = productInt(c->d, c->dim);
-  ierr = PetscMalloc5(m, PetscInt, &ixL, m, PetscInt, &ixG, m, PetscInt, &ixD,
-                      c->d, PetscInt, &ind, c->d, PetscScalar, &n); CHKERRQ(ierr);
+  ierr = PetscMalloc5(m, &ixL, m, &ixG, m, &ixD, c->d, &ind, c->d, &n); CHKERRQ(ierr);
   ierr = VecGetArray(c->w[1], &uD); CHKERRQ(ierr); // Just some workspace for boundary values
   ierr = VecGetArray(c->x, &x); CHKERRQ(ierr);    // Coordinates in a block-size d vector
   l = 0; g = 0; d = 0; // indices for local, global, and dirichlet
@@ -403,7 +407,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
           uD[d] = bc.value;
           ixL[l] = -1;
           ixD[d++] = l++;
-        } else { SETERRQ(1, "Neumann not implemented."); }
+        } else { SETERRQ(PETSC_COMM_WORLD, 1, "Neumann not implemented."); }
     } else { // Interior
       ixL[l] = g;
       ixG[g++] = l++;
@@ -423,9 +427,10 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
   ierr = PetscPrintf(comm, "DOF distribution: %8d local     %8d global     %8d dirichlet\n", l, g, d); CHKERRQ(ierr);
 
-  ierr = ISCreateGeneral(comm, l, ixL, &c->isL); CHKERRQ(ierr); // We need this to build the preconditioner
-  ierr = ISCreateGeneral(comm, d, ixD, &isD); CHKERRQ(ierr);
-  ierr = ISCreateGeneral(comm, g, ixG, &isG); CHKERRQ(ierr);
+  // GP: not sure, may be PETSC_COPY_VALUES, PETSC_OWN_POINTER, PETSC_USE_POINTER
+  ierr = ISCreateGeneral(comm, l, ixL, PETSC_COPY_VALUES, &c->isL); CHKERRQ(ierr); // We need this to build the preconditioner
+  ierr = ISCreateGeneral(comm, d, ixD, PETSC_COPY_VALUES, &isD); CHKERRQ(ierr);
+  ierr = ISCreateGeneral(comm, g, ixG, PETSC_COPY_VALUES, &isG); CHKERRQ(ierr);
 
   vL = c->w[0]; // A prototype local vector
   ierr = VecScatterCreate(vD, PETSC_NULL, vL, isD, &c->scatterDL); CHKERRQ(ierr);
@@ -457,7 +462,7 @@ PetscErrorCode SetupBC(MPI_Comm comm, BdyFunc bf, Vec *vGlob, MatElliptic *c) {
 
   ierr = PetscFree5(ixL, ixG, ixD, ind, n); CHKERRQ(ierr);
   c->isG = isG;
-  ierr = ISDestroy(isD); CHKERRQ(ierr);
+  ierr = ISDestroy(&isD); CHKERRQ(ierr);
   *vGlob = vG;
   c->dirichlet = vD;
   ierr = VecDuplicate(vD, &c->dirichlet0); CHKERRQ(ierr);
@@ -534,7 +539,7 @@ PetscErrorCode FormFunction(SNES snes, Vec U, Vec rhs, void *void_ac) {
 
 #undef __FUNCT__
 #define __FUNCT__ "FormJacobian"
-PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag, void *void_ac) {
+PetscErrorCode FormJacobian(SNES snes, Vec w, Mat A, Mat P, void *void_ac) {
   PetscErrorCode ierr;
   AppCtx *ac;
   MatElliptic *c;
@@ -547,7 +552,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   // Jacobian about `w', but we will rely on the viscosity already being
   // properly set since FormFunction() has already been called with the same `w'.
   ac = (AppCtx *)void_ac;
-  ierr = MatShellGetContext(*A, (void **)&c); CHKERRQ(ierr);
+  ierr = MatShellGetContext(A, (void **)&c); CHKERRQ(ierr);
   ierr = VecGetArray(c->eta, &eta); CHKERRQ(ierr);
   ierr = VecGetArray(c->deta, &deta); CHKERRQ(ierr);
   ierr = VecGetArrays(c->gradu, c->d, &u0_); CHKERRQ(ierr);
@@ -565,7 +570,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
       for (int j=0; j < c->d; j++) {
         const PetscInt iM = it.shift(j, -1);
         const PetscInt iP = it.shift(j,  1);
-        if (iM < 0 || iP < 0) SETERRQ(1, "Local neighbor not on local grid.");
+        if (iM < 0 || iP < 0) SETERRQ(PETSC_COMM_WORLD, 1, "Local neighbor not on local grid.");
         x0 = x[i*c->d+j]; xMM = x[iM*c->d+j]; xPP = x[iP*c->d+j];
         xM = 0.5 * (xMM + x0); idxM = 1.0 / (x0 - xMM); xP = 0.5 * (x0 + xPP); idxP = 1.0 / (xPP - x0); idx = 1.0 / (xP - xM);
         eM = 0.5 * (eta[iM] + eta[i]); deM = 0.5 * (deta[iM] + deta[i]); du0M = 0.5 * (u0_[j][iM] + u0_[j][i]);
@@ -574,7 +579,7 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
         J[k] = ixL[iP]; v[k] = -idx * (idxP * eP + 0.5 * deP * du0P); k++;
         v[0] += idx * (idxP * eP + idxM * eM - 0.5 * (deP * du0P - deM * du0M));
       }
-      ierr = MatSetValues(*P, 1, J, k, J, v, INSERT_VALUES); CHKERRQ(ierr);
+      ierr = MatSetValues(P, 1, J, k, J, v, INSERT_VALUES); CHKERRQ(ierr);
     }
   }
   ierr = VecRestoreArray(c->eta, &eta); CHKERRQ(ierr);
@@ -583,9 +588,9 @@ PetscErrorCode FormJacobian(SNES snes, Vec w, Mat *A, Mat *P, MatStructure *flag
   ierr = VecRestoreArray(c->x, &x); CHKERRQ(ierr);
   ierr = ISRestoreIndices(c->isL, &ixL); CHKERRQ(ierr);
 
-  ierr = MatAssemblyBegin(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(*P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-  *flag = SAME_NONZERO_PATTERN;
+  ierr = MatAssemblyBegin(P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(P,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  //*flag = SAME_NONZERO_PATTERN;
   PetscFunctionReturn(0);
 }
 
@@ -654,7 +659,7 @@ PetscErrorCode CreateExactSolution(SNES snes, Vec u, Vec u2) {
         }
         break;
       default:
-        SETERRQ(1, "Choose an exact solution.");
+        SETERRQ(PETSC_COMM_WORLD, 1, "Choose an exact solution.");
     }
   }
 

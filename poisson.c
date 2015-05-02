@@ -68,14 +68,14 @@ int main(int argc,char **args)
   ierr = AssemblePoissonPC2(m, n, &PL); CHKERRQ(ierr);
 
   if (false) {
-    PetscTruth flag;
+    PetscBool  flag;
     ierr = MatIsSymmetric(PL, 1e-4, &flag); CHKERRQ(ierr);
     printf("Symmetric?  %d\n", flag);
   }
 
 
   ierr = KSPCreate(PETSC_COMM_WORLD,&ksp);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ksp,L,PL,DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ksp,L,PL);CHKERRQ(ierr);
   ierr = KSPSetFromOptions(ksp);CHKERRQ(ierr);
 
   // 3-D solution function
@@ -161,9 +161,11 @@ int main(int argc,char **args)
      Free work space.  All PETSc objects should be destroyed when they
      are no longer needed.
   */
-  ierr = KSPDestroy(ksp);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr);  ierr = VecDestroy(x);CHKERRQ(ierr);
-  ierr = VecDestroy(b);CHKERRQ(ierr);  ierr = MatDestroy(A);CHKERRQ(ierr);
+  ierr = KSPDestroy(&ksp);CHKERRQ(ierr);
+  ierr = VecDestroy(&u);CHKERRQ(ierr);
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&b);CHKERRQ(ierr);
+  ierr = MatDestroy(&A);CHKERRQ(ierr);
 
   /* if (user_defined_pc) { */
   /*   ierr = SampleShellPCDestroy(shell);CHKERRQ(ierr); */
@@ -257,12 +259,12 @@ PetscErrorCode MatPoissonDestroy (Mat A) {
   PetscFunctionBegin;
   ierr = MatShellGetContext(A, (void *)&c); CHKERRQ(ierr);
   for (int i = 0; i < c->rank; i++) {
-    ierr = MatDestroy(c->A[i]); CHKERRQ(ierr);
+    ierr = MatDestroy(&c->A[i]); CHKERRQ(ierr);
   }
   ierr = PetscFree(c->A); CHKERRQ(ierr);
   ierr = PetscFree(c->dim); CHKERRQ(ierr);
-  ierr = VecDestroyVecs(c->u, c->rank); CHKERRQ(ierr);
-  ierr = VecDestroyVecs(c->v, c->rank); CHKERRQ(ierr);
+  ierr = VecDestroyVecs(c->rank, &c->u); CHKERRQ(ierr);
+  ierr = VecDestroyVecs(c->rank, &c->v); CHKERRQ(ierr);
   ierr = PetscFree(c);
   PetscFunctionReturn(0);
 }
@@ -275,7 +277,7 @@ PetscErrorCode AssemblePoissonPC2(int m, int n, Mat *A) {
 
   PetscFunctionBegin;
   ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, m*n, m*n, 5, PETSC_NULL, A); CHKERRQ(ierr);
-  ierr = PetscMalloc2(m, double, &x, n, double, &y); CHKERRQ(ierr);
+  ierr = PetscMalloc2(m, &x, n, &y); CHKERRQ(ierr);
   for (int i = 0; i < m; i++) x[i] = cos(i * PI / (m - 1));
   for (int j = 0; j < n; j++) y[j] = cos(j * PI / (n - 1));
 

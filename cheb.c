@@ -25,7 +25,7 @@ int main(int argc,char **args)
   PetscScalar    v,one = 1.0,none = -1.0;
   PetscInt       i,j,Ii,J,Istart,Iend, m1 = 5, m = 8,n = 7, p=1, d=0, its;
   PetscErrorCode ierr;
-  PetscTruth     user_defined_pc, user_defined_mat;
+  PetscBool      user_defined_pc, user_defined_mat;
 
   ierr = PetscInitialize(&argc,&args,(char *)0,help); CHKERRQ(ierr);
 
@@ -59,13 +59,13 @@ int main(int argc,char **args)
                        x2, b2, &A2); CHKERRQ(ierr);
 
   ierr = KSPCreate(PETSC_COMM_WORLD,&ksp);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ksp,A,A,DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ksp,A,A);CHKERRQ(ierr);
   ierr = KSPSetFromOptions(ksp);CHKERRQ(ierr);
 
   // Solution function
   double *a;
   ierr = VecGetArray(u, &a); CHKERRQ(ierr);
-  for (int i=0; i<m1; i++) {
+  for (unsigned int i=0; i<m1; i++) {
     a[i] = exp(cos(i * PI / (m1-1)));
   }
   ierr = VecRestoreArray(u, &a); CHKERRQ(ierr);
@@ -74,11 +74,11 @@ int main(int argc,char **args)
   double *e;
   ierr = VecGetArray(u2, &a); CHKERRQ(ierr);
   ierr = VecGetArray(du2, &e); CHKERRQ(ierr);
-  for (int i=0; i < m; i++) {
+  for (unsigned int i=0; i < m; i++) {
     double x = (m==1) ? 0 : cos (i * PI / (m-1));
-    for (int j=0; j < n; j++) {
+    for (unsigned int j=0; j < n; j++) {
       double y = (n==1) ? 0 : cos (j * PI / (n-1));
-      for (int k=0; k < p; k++) {
+      for (unsigned int k=0; k < p; k++) {
         double z = (p==1) ? 0 : cos (k * PI / (p-1));
         a[(i*n + j) * p + k] = exp(x) + exp(y) + exp(z);
         switch (d) {
@@ -121,9 +121,11 @@ int main(int argc,char **args)
      Free work space.  All PETSc objects should be destroyed when they
      are no longer needed.
   */
-  ierr = KSPDestroy(ksp);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr);  ierr = VecDestroy(x);CHKERRQ(ierr);
-  ierr = VecDestroy(b);CHKERRQ(ierr);  ierr = MatDestroy(A);CHKERRQ(ierr);
+  ierr = KSPDestroy(&ksp);CHKERRQ(ierr);
+  ierr = VecDestroy(&u);CHKERRQ(ierr);
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&b);CHKERRQ(ierr);
+  ierr = MatDestroy(&A);CHKERRQ(ierr);
 
   /* if (user_defined_pc) { */
   /*   ierr = SampleShellPCDestroy(shell);CHKERRQ(ierr); */

@@ -59,7 +59,7 @@ int main(int argc,char **args)
   PetscScalar    v,one = 1.0,none = -1.0;
   PetscInt       i,j,Ii,J,Istart,Iend,m = 8,n = 7,its, mn;
   PetscErrorCode ierr;
-  PetscTruth     user_defined_pc, user_defined_mat;
+  PetscBool      user_defined_pc, user_defined_mat;
 
   PetscInitialize(&argc,&args,(char *)0,help);
   ierr = PetscOptionsGetInt(PETSC_NULL,"-m",&m,PETSC_NULL);CHKERRQ(ierr);
@@ -110,7 +110,7 @@ int main(int argc,char **args)
   ierr = MatMult(B3,u,b);CHKERRQ(ierr);
 
   ierr = KSPCreate(PETSC_COMM_WORLD,&ksp);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ksp,B3,A,DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ksp,B3,A);CHKERRQ(ierr);
 
   ierr = KSPGetPC(ksp,&pc);CHKERRQ(ierr);
   ierr = KSPSetTolerances(ksp,1.e-7,PETSC_DEFAULT,PETSC_DEFAULT,
@@ -125,7 +125,7 @@ int main(int argc,char **args)
     ierr = PCShellSetDestroy(pc,SampleShellPCDestroy);CHKERRQ(ierr);
     ierr = PCShellSetContext(pc,shell);CHKERRQ(ierr);
     ierr = PCShellSetName(pc,"MyPreconditioner");CHKERRQ(ierr);
-    ierr = PCGetOperators(pc, &M, &P, PETSC_NULL); CHKERRQ(ierr);
+    ierr = PCGetOperators(pc, &M, &P); CHKERRQ(ierr);
     ierr = SampleShellPCSetUp(pc,P,x);CHKERRQ(ierr);
   } else {
     ierr = PCSetType(pc,PCJACOBI);CHKERRQ(ierr);
@@ -146,12 +146,14 @@ int main(int argc,char **args)
      Free work space.  All PETSc objects should be destroyed when they
      are no longer needed.
   */
-  ierr = KSPDestroy(ksp);CHKERRQ(ierr);
-  ierr = MatDestroy(B);CHKERRQ(ierr);
-  ierr = MatDestroy(B2);CHKERRQ(ierr);
-  ierr = MatDestroy(B3);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr);  ierr = VecDestroy(x);CHKERRQ(ierr);
-  ierr = VecDestroy(b);CHKERRQ(ierr);  ierr = MatDestroy(A);CHKERRQ(ierr);
+  ierr = KSPDestroy(&ksp);CHKERRQ(ierr);
+  ierr = MatDestroy(&B);CHKERRQ(ierr);
+  ierr = MatDestroy(&B2);CHKERRQ(ierr);
+  ierr = MatDestroy(&B3);CHKERRQ(ierr);
+  ierr = VecDestroy(&u);CHKERRQ(ierr);  
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&b);CHKERRQ(ierr); 
+  ierr = MatDestroy(&A);CHKERRQ(ierr);
 
   ierr = PetscFinalize();CHKERRQ(ierr);
   return 0;
@@ -173,7 +175,7 @@ PetscErrorCode SampleShellPCCreate(SampleShellPC **shell)
   SampleShellPC  *newctx;
   PetscErrorCode ierr;
 
-  ierr         = PetscNew(SampleShellPC,&newctx);CHKERRQ(ierr);
+  ierr         = PetscNew(&newctx);CHKERRQ(ierr);
   newctx->diag = 0;
   *shell       = newctx;
   return 0;
@@ -262,7 +264,7 @@ PetscErrorCode SampleShellPCDestroy(PC pc)
   SampleShellPC   *shell;
 
   ierr = PCShellGetContext(pc,(void**)&shell);CHKERRQ(ierr);
-  ierr = VecDestroy(shell->diag);CHKERRQ(ierr);
+  ierr = VecDestroy(&shell->diag);CHKERRQ(ierr);
   ierr = PetscFree(shell);CHKERRQ(ierr);
   return 0;
 }
@@ -276,7 +278,7 @@ PetscErrorCode MatShellMult(Mat A, Vec vx, Vec vy)
   PetscScalar *x, *y, v, four, one;
   PetscInt m, n, i, j, I;
   MatShellCtx *ctx;
-  PetscTruth munge;
+  PetscBool  munge;
 
   ierr = VecGetArray(vx, &x); CHKERRQ(ierr);
   ierr = VecGetArray(vy, &y); CHKERRQ(ierr);
@@ -314,7 +316,7 @@ PetscErrorCode MatShellMult(Mat A, Vec vx, Vec vy)
 #define __FUNCT__ "MatShellGetDiagonal"
 PetscErrorCode MatShellGetDiagonal(Mat A, Vec vx){
   PetscErrorCode ierr;
-  PetscTruth munge;
+  PetscBool  munge;
   PetscScalar *x;
 
   ierr = PetscOptionsHasName(PETSC_NULL,"-munge",&munge); CHKERRQ(ierr);

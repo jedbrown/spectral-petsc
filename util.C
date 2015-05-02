@@ -1,3 +1,4 @@
+#define MAIN
 #ifdef MAIN
 #include <stdio.h>
 #include <petscvec.h>
