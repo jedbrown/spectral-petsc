@@ -2,7 +2,7 @@ static char help[] = "Stokes problem with non-Newtonian rheology via Chebyshev c
 
 #define SOLVE 1
 #define CHECK_EXACT 1
-#define WITH_CPPAD 1
+#define WITH_CPPAD 0
 
 #include "chebyshev.h"
 #include "util.C"
@@ -73,7 +73,7 @@ PetscErrorCode StokesMatGetDiagonalSchur(Mat, Vec);
 PetscErrorCode StokesMatMultPV(Mat, Vec, Vec);
 PetscErrorCode StokesMatMultVP(Mat, Vec, Vec);
 PetscErrorCode StokesMatMultVV(Mat, Vec, Vec);
-PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscTruth withDirichlet, Vec xG, Vec yG);
+PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscBool withDirichlet, Vec xG, Vec yG);
 PetscErrorCode StokesFunction(SNES, Vec, Vec, void *);
 PetscErrorCode StokesJacobian(SNES, Vec, Mat *, Mat *, MatStructure *, void *);
 PetscErrorCode StokesSetupDomain(StokesCtx *, Vec *);
@@ -130,7 +130,7 @@ int main(int argc,char **args)
   PetscReal            norm, rnorm, unorm, u2norm;
   PetscInt             its;
   SNESConvergedReason  reason;
-  PetscTruth           flag;
+  PetscBool            flag;
   PetscErrorCode       ierr;
 
   PetscFunctionBegin;
@@ -169,7 +169,7 @@ int main(int argc,char **args)
 #if (WITH_CPPAD)
       case 3: ierr = PCShellSetSetUp(pc, StokesPCSetUp3);CHKERRQ(ierr); break; // Finite difference with automatic differentiation
 #endif
-      default: SETERRQ1(1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
+      default: SETERRQ1(PETSC_COMM_WORLD, 1, "pcvel type number %d not implemented", t);CHKERRQ(ierr);
     }
   }
   {
@@ -181,7 +181,7 @@ int main(int argc,char **args)
       case 1: ierr = PCShellSetApply(pc, StokesPCApply1);CHKERRQ(ierr); break; // Upper triangular saddle preconditioner
       case 2: ierr = PCShellSetApply(pc, StokesPCApply2);CHKERRQ(ierr); break; // Block diagonal saddle preconditioner
       case 3: ierr = PCShellSetApply(pc, StokesPCApply3);CHKERRQ(ierr); break; // Lower triangular saddle preconditioner
-      default: SETERRQ1(1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
+      default: SETERRQ1(PETSC_COMM_WORLD, 1, "pc_saddle_type %d not implemented", t);CHKERRQ(ierr);
     }
   }
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
@@ -204,10 +204,10 @@ int main(int argc,char **args)
     }
   }
   {
-    PetscTruth isNull;
+    PetscBool isNull;
     ierr = MatNullSpaceTest(ns, A, &isNull);CHKERRQ(ierr);
     if (!isNull) {
-      SETERRQ(1,"Null space test failed");
+      SETERRQ(PETSC_COMM_WORLD, 1,"Null space test failed");
     }
   }
 
@@ -241,12 +241,15 @@ int main(int argc,char **args)
     }
   }
 
-  ierr = SNESDestroy(snes);CHKERRQ(ierr);
+  ierr = SNESDestroy(&snes);CHKERRQ(ierr);
   ierr = StokesDestroy(ctx);CHKERRQ(ierr);
-  ierr = MatDestroy(A);CHKERRQ(ierr);
-  ierr = VecDestroy(x);CHKERRQ(ierr);           ierr = VecDestroy(r);CHKERRQ(ierr);
-  ierr = VecDestroy(u);CHKERRQ(ierr);           ierr = VecDestroy(u2);CHKERRQ(ierr);
-  ierr = MatNullSpaceDestroy(ns);CHKERRQ(ierr); ierr = VecDestroy(nv);CHKERRQ(ierr);
+  ierr = MatDestroy(&A);CHKERRQ(ierr);
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&r);CHKERRQ(ierr);
+  ierr = VecDestroy(&u);CHKERRQ(ierr);
+  ierr = VecDestroy(&u2);CHKERRQ(ierr);
+  ierr = MatNullSpaceDestroy(&ns);CHKERRQ(ierr);
+  ierr = VecDestroy(&nv);CHKERRQ(ierr);
 
   ierr = PetscFinalize();CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -263,11 +266,11 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
-  ierr = PetscMalloc2(1, StokesCtx, ctx, 1, StokesOptions, &opt);CHKERRQ(ierr);
+  ierr = PetscMalloc2(1, ctx, 1, &opt);CHKERRQ(ierr);
   c = *ctx; c->options = opt; c->comm = comm;
   ierr = StokesProcessOptions(c);CHKERRQ(ierr);
   d = c->numDims; dim = c->dim; m = productInt(d, dim);
-  ierr = PetscMalloc2(d, Mat, &c->DP, d, Mat, &c->DV);CHKERRQ(ierr);
+  ierr = PetscMalloc2(d, &c->DP, d, &c->DV);CHKERRQ(ierr);
   c->numWorkP = 2*d+1; c->numWorkV = 2 + 3*d;
   ierr = VecCreate(comm, &c->eta);CHKERRQ(ierr); // Prototype for scalar valued local
   ierr = VecSetSizes(c->eta, m, PETSC_DECIDE);CHKERRQ(ierr);
@@ -326,17 +329,17 @@ PetscErrorCode StokesCreate(MPI_Comm comm, Mat *A, Vec *X, StokesCtx **ctx)
     ierr = MatCreateSeqAIJ(comm, n, n, 1+2*d, PETSC_NULL, &c->MatVVPC);CHKERRQ(ierr);
     ierr = MatSetFromOptions(c->MatVVPC);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPSchur);CHKERRQ(ierr);
-    ierr = KSPSetOperators(c->KSPSchur, c->MatSchur, c->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+    ierr = KSPSetOperators(c->KSPSchur, c->MatSchur, c->MatSchur);CHKERRQ(ierr);
     ierr = KSPGetPC(c->KSPSchur, &pc);CHKERRQ(ierr);
     ierr = PCSetType(pc, PCJACOBI);CHKERRQ(ierr); // diagonal scaling from viscosity
     ierr = KSPSetOptionsPrefix(c->KSPSchur, "schur_");CHKERRQ(ierr);
     ierr = KSPSetFromOptions(c->KSPSchur);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPVelocity);CHKERRQ(ierr);
-    ierr = KSPSetOperators(c->KSPVelocity, c->MatVV, c->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+    ierr = KSPSetOperators(c->KSPVelocity, c->MatVV, c->MatVVPC);CHKERRQ(ierr);
     ierr = KSPSetOptionsPrefix(c->KSPVelocity, "vel_");CHKERRQ(ierr);
     ierr = KSPSetFromOptions(c->KSPVelocity);CHKERRQ(ierr);
     ierr = KSPCreate(comm, &c->KSPSchurVelocity);CHKERRQ(ierr);
-    ierr = KSPSetOperators(c->KSPSchurVelocity, c->MatVV, c->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+    ierr = KSPSetOperators(c->KSPSchurVelocity, c->MatVV, c->MatVVPC);CHKERRQ(ierr);
     ierr = KSPSetOptionsPrefix(c->KSPSchurVelocity, "svel_");CHKERRQ(ierr);
     ierr = KSPSetFromOptions(c->KSPSchurVelocity);CHKERRQ(ierr);
   }
@@ -350,35 +353,38 @@ PetscErrorCode StokesDestroy (StokesCtx *c)
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
-  ierr = KSPDestroy(c->KSPVelocity);CHKERRQ(ierr);
-  ierr = KSPDestroy(c->KSPSchurVelocity);CHKERRQ(ierr);
-  ierr = KSPDestroy(c->KSPSchur);CHKERRQ(ierr);
-  ierr = MatNullSpaceDestroy(c->NullSpaceSchur);CHKERRQ(ierr);
-  ierr = MatDestroy(c->MatSchur);CHKERRQ(ierr);
-  ierr = MatDestroy(c->MatPV);CHKERRQ(ierr);                  ierr = MatDestroy(c->MatVP);CHKERRQ(ierr);
-  ierr = MatDestroy(c->MatVV);CHKERRQ(ierr);                  ierr = MatDestroy(c->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPDestroy(&c->KSPVelocity);CHKERRQ(ierr);
+  ierr = KSPDestroy(&c->KSPSchurVelocity);CHKERRQ(ierr);
+  ierr = KSPDestroy(&c->KSPSchur);CHKERRQ(ierr);
+  ierr = MatNullSpaceDestroy(&c->NullSpaceSchur);CHKERRQ(ierr);
+  ierr = MatDestroy(&c->MatSchur);CHKERRQ(ierr);
+  ierr = MatDestroy(&c->MatPV);CHKERRQ(ierr);
+  ierr = MatDestroy(&c->MatVP);CHKERRQ(ierr);
+  ierr = MatDestroy(&c->MatVV);CHKERRQ(ierr);
+  ierr = MatDestroy(&c->MatVVPC);CHKERRQ(ierr);
+
   for (int i=0; i < c->numDims; i++) {
-    ierr = MatDestroy(c->DP[i]);CHKERRQ(ierr);
-    ierr = MatDestroy(c->DV[i]);CHKERRQ(ierr);
+    ierr = MatDestroy(&c->DP[i]);CHKERRQ(ierr);
+    ierr = MatDestroy(&c->DV[i]);CHKERRQ(ierr);
   }
-  ierr = VecDestroyVecs(c->workP, c->numWorkP);CHKERRQ(ierr); ierr = VecDestroyVecs(c->workV, c->numWorkV);CHKERRQ(ierr);
-  ierr = VecDestroyVecs(c->strain, c->numDims);CHKERRQ(ierr);
-  ierr = VecDestroy(c->eta);CHKERRQ(ierr);                    ierr = VecDestroy(c->deta);CHKERRQ(ierr);
-  ierr = VecDestroy(c->coord);CHKERRQ(ierr);                  ierr = VecDestroy(c->dirichlet);CHKERRQ(ierr);
-  ierr = VecDestroy(c->force);CHKERRQ(ierr);
-  ierr = VecDestroy(c->pG0);CHKERRQ(ierr);                    ierr = VecDestroy(c->pG1);CHKERRQ(ierr);
-  ierr = VecDestroy(c->vG0);CHKERRQ(ierr);                    ierr = VecDestroy(c->vG1);CHKERRQ(ierr);
-  ierr = VecDestroy(c->massLump);CHKERRQ(ierr);
-  ierr = ISDestroy(c->isLP);CHKERRQ(ierr);                    ierr = ISDestroy(c->isPL);CHKERRQ(ierr);
-  ierr = ISDestroy(c->isLV);CHKERRQ(ierr);                    ierr = ISDestroy(c->isVL);CHKERRQ(ierr);
-  ierr = ISDestroy(c->isLD);CHKERRQ(ierr);                    ierr = ISDestroy(c->isDL);CHKERRQ(ierr);
-  ierr = ISDestroy(c->isPG);CHKERRQ(ierr);                    ierr = ISDestroy(c->isGP);CHKERRQ(ierr);
-  ierr = ISDestroy(c->isVG);CHKERRQ(ierr);                    ierr = ISDestroy(c->isGV);CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterLP);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterPL);CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterLV);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterVL);CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterLD);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterDL);CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterPG);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterGP);CHKERRQ(ierr);
-  ierr = VecScatterDestroy(c->scatterVG);CHKERRQ(ierr);       ierr = VecScatterDestroy(c->scatterGV);CHKERRQ(ierr);
+  ierr = VecDestroyVecs(&c->numWorkP, &c->workP);CHKERRQ(ierr); ierr = VecDestroyVecs(&c->numWorkV, &c->workV);CHKERRQ(ierr);
+  ierr = VecDestroyVecs(&c->numDims, &c->strain);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->eta);CHKERRQ(ierr);                    ierr = VecDestroy(&c->deta);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->coord);CHKERRQ(ierr);                  ierr = VecDestroy(&c->dirichlet);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->force);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->pG0);CHKERRQ(ierr);                    ierr = VecDestroy(&c->pG1);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->vG0);CHKERRQ(ierr);                    ierr = VecDestroy(&c->vG1);CHKERRQ(ierr);
+  ierr = VecDestroy(&c->massLump);CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isLP);CHKERRQ(ierr);                    ierr = ISDestroy(&c->isPL);CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isLV);CHKERRQ(ierr);                    ierr = ISDestroy(&c->isVL);CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isLD);CHKERRQ(ierr);                    ierr = ISDestroy(&c->isDL);CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isPG);CHKERRQ(ierr);                    ierr = ISDestroy(&c->isGP);CHKERRQ(ierr);
+  ierr = ISDestroy(&c->isVG);CHKERRQ(ierr);                    ierr = ISDestroy(&c->isGV);CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterLP);CHKERRQ(ierr);       ierr = VecScatterDestroy(&c->scatterPL);CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterLV);CHKERRQ(ierr);       ierr = VecScatterDestroy(&c->scatterVL);CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterLD);CHKERRQ(ierr);       ierr = VecScatterDestroy(&c->scatterDL);CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterPG);CHKERRQ(ierr);       ierr = VecScatterDestroy(&c->scatterGP);CHKERRQ(ierr);
+  ierr = VecScatterDestroy(&c->scatterVG);CHKERRQ(ierr);       ierr = VecScatterDestroy(&c->scatterGV);CHKERRQ(ierr);
   if (c->numMixed > 0) { ierr = PetscFree(c->mixed);CHKERRQ(ierr); }
   ierr = PetscFree2(c->DP, c->DV);CHKERRQ(ierr);
   ierr = PetscFree(c->dim);CHKERRQ(ierr);
@@ -393,7 +399,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
 {
   MPI_Comm        comm = ctx->comm;
   StokesOptions  *opt = ctx->options;
-  PetscTruth      flag;
+  PetscBool       flag;
   PetscInt        exact, boundary, rheology;
   PetscErrorCode  ierr;
 
@@ -449,7 +455,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       opt->exactCtx = PETSC_NULL;
       break;
     default:
-      SETERRQ1(PETSC_ERR_SUP, "Exact solution %d not implemented", exact);
+      SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_SUP, "Exact solution %d not implemented", exact);
   }
   switch (boundary) {
     case 0:
@@ -477,7 +483,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       opt->boundary    = StokesBoundary4;
       break;
     default:
-      SETERRQ1(PETSC_ERR_SUP, "Boundary type %d not implemented", exact);
+      SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_SUP, "Boundary type %d not implemented", exact);
   }
   switch (rheology) {
     case 0:
@@ -489,7 +495,7 @@ PetscErrorCode StokesProcessOptions(StokesCtx *ctx)
       opt->rheologyCtx = (void *)opt;
       break;
     default:
-      SETERRQ1(PETSC_ERR_SUP, "Rheology type %d not implemented", rheology);
+      SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_SUP, "Rheology type %d not implemented", rheology);
   }
   PetscFunctionReturn(0);
 }
@@ -567,7 +573,7 @@ PetscErrorCode StokesMatMultPV(Mat A, Vec xG, Vec yG) // divergence of velocity
 
 #undef __FUNCT__
 #define __FUNCT__ "StokesDivergence"
-PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscTruth withDirichlet, Vec xG, Vec yG) // divergence of velocity
+PetscErrorCode StokesDivergence(StokesCtx *ctx, PetscBool  withDirichlet, Vec xG, Vec yG) // divergence of velocity
 {
   PetscErrorCode  ierr;
 
@@ -783,8 +789,8 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   PetscErrorCode       ierr;
 
   PetscFunctionBegin;
-  ierr = PetscMalloc6(m, PetscInt, &ixLP, m, PetscInt, &ixPL, n, PetscInt, &ixLV, n, PetscInt, &ixVL, n, PetscInt, &ixLD, n, PetscInt, &ixDL);CHKERRQ(ierr);
-  ierr = PetscMalloc5(m, PetscInt, &ixPG, N, PetscInt, &ixGP, n, PetscInt, &ixVG, N, PetscInt, &ixGV, m, StokesBoundaryMixed, &mixed);CHKERRQ(ierr);
+  ierr = PetscMalloc6(m, &ixLP, m, &ixPL, n, &ixLV, n, &ixVL, n, &ixLD, n, &ixDL);CHKERRQ(ierr);
+  ierr = PetscMalloc5(m, &ixPG, N, &ixGP, n, &ixVG, N, &ixGV, m,  &mixed);CHKERRQ(ierr);
   ierr = VecGetArray(c->coord, &x);CHKERRQ(ierr);    // Coordinates in a block-size d vector
   ierr = VecGetArray(c->workV[0], &v);CHKERRQ(ierr); // Some workspace for boundary values
   lp=lv=gp=gv=dv=g=im=0;
@@ -860,7 +866,7 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
           }
           break;
         default:
-          SETERRQ(1, "Boundary type not implemented.");
+          SETERRQ(PETSC_COMM_WORLD, 1, "Boundary type not implemented.");
       }
       ixLP[lp++] = -1; // local pressure at the boundary is never represented in global pressure
     } else { // Interior
@@ -890,16 +896,17 @@ PetscErrorCode StokesSetupDomain(StokesCtx *c, Vec *global)
   ierr = VecCreate(comm, &vD);CHKERRQ(ierr);   ierr = VecSetSizes(vD, dv, PETSC_DECIDE);CHKERRQ(ierr);   ierr = VecSetFromOptions(vD);CHKERRQ(ierr);
   ierr = PetscPrintf(comm, "DOF distribution: %d global   %d/%d pressure    %d/%d velocity    %d dirichlet    %d mixed\n", g, gp, lp, gv, lv, dv, im);CHKERRQ(ierr);
   { // These index sets are needed to create the scatters, but may be needed when forming preconditioners, so we store them in StokesCtx.
-    ierr = ISCreateGeneral(comm, lp, ixLP, &c->isLP);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, gp, ixPL, &c->isPL);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, lv, ixLV, &c->isLV);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, gv, ixVL, &c->isVL);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, lv, ixLD, &c->isLD);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, dv, ixDL, &c->isDL);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, gp, ixPG, &c->isPG);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, g , ixGP, &c->isGP);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, gv, ixVG, &c->isVG);CHKERRQ(ierr);
-    ierr = ISCreateGeneral(comm, g , ixGV, &c->isGV);CHKERRQ(ierr);
+     //GP: not sure, may be: PETSC_COPY_VALUES, PETSC_OWN_POINTER, PETSC_USE_POINTER
+    ierr = ISCreateGeneral(comm, lp, ixLP, PETSC_COPY_VALUES, &c->isLP);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, gp, ixPL, PETSC_COPY_VALUES, &c->isPL);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, lv, ixLV, PETSC_COPY_VALUES, &c->isLV);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, gv, ixVL, PETSC_COPY_VALUES, &c->isVL);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, lv, ixLD, PETSC_COPY_VALUES, &c->isLD);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, dv, ixDL, PETSC_COPY_VALUES, &c->isDL);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, gp, ixPG, PETSC_COPY_VALUES, &c->isPG);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, g , ixGP, PETSC_COPY_VALUES, &c->isGP);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, gv, ixVG, PETSC_COPY_VALUES, &c->isVG);CHKERRQ(ierr);
+    ierr = ISCreateGeneral(comm, g , ixGV, PETSC_COPY_VALUES, &c->isGV);CHKERRQ(ierr);
   }
   pL = c->workP[0]; vL = c->workV[1]; // prototype local vectors
   ierr = VecScatterCreate(pL, c->isPL, pG, PETSC_NULL, &c->scatterLP);CHKERRQ(ierr);
@@ -1033,10 +1040,10 @@ PetscErrorCode StokesPressureReduceOrder(Vec pL, StokesCtx *c)
   PetscErrorCode  ierr;
 
   PetscFunctionBegin;
-  if (d > 3) SETERRQ1(1, "Not implemented for dimension %d\n", d);
+  if (d > 3) SETERRQ1(PETSC_COMM_WORLD, 1, "Not implemented for dimension %d\n", d);
   //ierr = VecPrint2(pL, c->dim[0], c->dim[1],          1, "unfiltered", "p");CHKERRQ(ierr);
   m = dim[0]; n = dim[1]; p = (d == 2) ? 1 : dim[2]; mnp = PetscMax(PetscMax(m,n),p);
-  ierr = PetscMalloc2(4*mnp, PetscReal, &work, mnp, PetscReal, &x);CHKERRQ(ierr);
+  ierr = PetscMalloc2(4*mnp, &work, mnp, &x);CHKERRQ(ierr);
   ierr = VecGetArray(pL, &pres);CHKERRQ(ierr);
   ierr = VecGetArray(c->coord, &coord);CHKERRQ(ierr);
   for (int i=1; i < m; i++) { // extend in the 'z' direction
@@ -1233,9 +1240,9 @@ PetscErrorCode StokesPCSetUp0(PC pc)
 
   ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur);CHKERRQ(ierr);
   //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -1293,7 +1300,7 @@ PetscErrorCode StokesPCSetUp1(PC pc)
       }
     }
     {
-      if (d != 2) SETERRQ1(1, "Jacobian inverse not implemented for dimension %d", d);
+      if (d != 2) SETERRQ1(PETSC_COMM_WORLD, 1, "Jacobian inverse not implemented for dimension %d", d);
       Jdet = J[0][0] * J[1][1] - J[0][1] * J[1][0];
       const PetscReal iJdet = 1.0 / Jdet;
       Jinv[0][0] =  iJdet * J[1][1];     Jinv[0][1] = -iJdet * J[0][1];
@@ -1448,9 +1455,9 @@ PetscErrorCode StokesPCSetUp1(PC pc)
   ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = VecReciprocal(ctx->massLump);CHKERRQ(ierr);
   ierr = MatDiagonalScale(ctx->MatVVPC, ctx->massLump, PETSC_NULL);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur);CHKERRQ(ierr);
   //ierr = MatView(ctx->MatVVPC, PETSC_VIEWER_STDOUT_SELF);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -1500,14 +1507,15 @@ PetscErrorCode StokesPCSetUp2(PC pc)
   ierr = MatAssemblyBegin(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(ctx->MatVVPC, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = ISRestoreIndices(ctx->isLV, &ixL); CHKERRQ(ierr);
-  ierr = MatGetColoring(ctx->MatVVPC, MATCOLORING_ID, &iscolor);CHKERRQ(ierr);
+  // GP: MatColoringType: MATCOLORINGNATURAL, MATCOLORINGINGSL, MATCOLORINGINGLF, MATCOLORINGINGID
+  ierr = MatGetColoring(ctx->MatVVPC, MATCOLORINGID, &iscolor);CHKERRQ(ierr);
   ierr = MatFDColoringCreate(ctx->MatVVPC, iscolor, &fdcolor);CHKERRQ(ierr);
   ierr = MatFDColoringSetFunction(fdcolor, (PetscErrorCode(*)(void))StokesColorFunction, ctx);CHKERRQ(ierr);
   ierr = MatFDColoringSetFromOptions(fdcolor);CHKERRQ(ierr);
-  ierr = MatFDColoringApply(ctx->MatVVPC, fdcolor, ctx->vG0, &flag, PETSC_NULL);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
-  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur, DIFFERENT_NONZERO_PATTERN);CHKERRQ(ierr);
+  ierr = MatFDColoringApply(ctx->MatVVPC, fdcolor, ctx->vG0, PETSC_NULL);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchurVelocity, ctx->MatVV, ctx->MatVVPC);CHKERRQ(ierr);
+  ierr = KSPSetOperators(ctx->KSPSchur, ctx->MatSchur, ctx->MatSchur);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1852,7 +1860,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
 
 
   ierr = PetscViewerCreate(PETSC_COMM_SELF, &view);CHKERRQ(ierr);
-  ierr = PetscViewerSetType(view, PETSC_VIEWER_ASCII);CHKERRQ(ierr);
+  ierr = PetscViewerSetType(view, PETSCVIEWERASCII);CHKERRQ(ierr);
   //ierr = PetscViewerSetFormat(view, PETSC_VIEWER_ASCII_VTK);CHKERRQ(ierr);  // Maybe there is a way to make this work properly?
   ierr = PetscViewerFileSetName(view, "stokes.vtk");CHKERRQ(ierr);
   ierr = PetscViewerASCIIPrintf(view, "# vtk DataFile Version 2.0\nStokes Output\nASCII\nDATASET STRUCTURED_GRID\n");CHKERRQ(ierr);
@@ -1889,7 +1897,7 @@ PetscErrorCode StokesStateView(StokesCtx *ctx, Vec state, const char *filename)
       ierr = VecRestoreArrays(ctx->strain, d, &strain);CHKERRQ(ierr);
     }
   }
-  ierr = PetscViewerDestroy(view);CHKERRQ(ierr);
+  ierr = PetscViewerDestroy(&view);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1966,7 +1974,7 @@ PetscErrorCode StokesExact1(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   PetscReal u, v, p;
 
   PetscFunctionBegin;
-  if (d > 3) SETERRQ2(1, "%s only implemented for dimension 2 and 3 but %d given", __FUNCT__, d);
+  if (d > 3) SETERRQ2(PETSC_COMM_WORLD, 1, "%s only implemented for dimension 2 and 3 but %d given", __FUNCT__, d);
   u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
   v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
   p = 0.25 * (cos(PETSC_PI * coord[0]) + cos(PETSC_PI * coord[1])) + 10 * (coord[0] + coord[1]);
@@ -1994,7 +2002,7 @@ PetscErrorCode StokesExact2(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   PetscReal u, v, p;
 
   PetscFunctionBegin;
-  if (d > 3) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
+  if (d > 3) SETERRQ2(PETSC_COMM_WORLD, 1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
   u =  sin(0.5 * PETSC_PI * coord[0]) * cos(0.5 * PETSC_PI * coord[1]);
   v = -cos(0.5 * PETSC_PI * coord[0]) * sin(0.5 * PETSC_PI * coord[1]);
   p = 0.0;
@@ -2018,7 +2026,7 @@ PetscErrorCode StokesExact3(PetscInt d, PetscReal *coord, PetscReal *value, Pets
   PetscReal u, v, p;
 
   PetscFunctionBegin;
-  if (d != 2) SETERRQ2(1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
+  if (d != 2) SETERRQ2(PETSC_COMM_WORLD, 1, "%s only implemented for dimension 2 but %d given", __FUNCT__, d);
   u = coord[1] + 1.0;
   v = 0.0;
   p = 0.0;

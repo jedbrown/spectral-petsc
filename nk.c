@@ -1,5 +1,5 @@
 
-static char help[] = "u`` + u^{2} = f. Different matrices for the Jacobian and the preconditioner.\n\
+static char help[] = "u'' + u^{2} = f. Different matrices for the Jacobian and the preconditioner.\n\
 Demonstrates the use of matrix-free Newton-Krylov methods in conjunction\n\
 with a user-provided preconditioner.  Input arguments are:\n\
    -snes_mf : Use matrix-free Newton methods\n\
@@ -28,9 +28,9 @@ T*/
      petscviewer.h - viewers               petscpc.h  - preconditioners
      petscksp.h   - linear solvers
 */
-#include <iostream>
-using namespace std;
-#include "petscsnes.h"
+//#include <iostream>
+//using namespace std;
+#include <petscsnes.h>
 
 struct AppCtx{int testint;};
 
@@ -40,7 +40,7 @@ struct AppCtx{int testint;};
 PetscErrorCode FormJacobian(SNES,Vec,Mat*,Mat*,MatStructure*,void*);
 PetscErrorCode FormFunction(SNES,Vec,Vec,void*);
 PetscErrorCode MatrixFreePreconditioner(PC,Vec,Vec);
-PetscErrorCode FormLineSearch(SNES,void*,Vec,Vec,Vec,Vec,Vec,PetscReal,PetscReal*,PetscReal*,PetscTruth*);
+PetscErrorCode FormLineSearch(SNES,void*,Vec,Vec,Vec,Vec,Vec,PetscReal,PetscReal*,PetscReal*,PetscBool*);
 
 int main(int argc,char **argv)
 {
@@ -55,12 +55,12 @@ int main(int argc,char **argv)
   PetscInt       *Shistit = 0,Khistl = 200,Shistl = 10;
   PetscReal      h,xp = 0.0,*Khist = 0,*Shist = 0;
   PetscScalar    v,pfive = .5;
-  PetscTruth     flg;
+  PetscBool      flg;
   AppCtx	 user;
 
   PetscInitialize(&argc,&argv,(char *)0,help);
   ierr = MPI_Comm_size(PETSC_COMM_WORLD,&size);CHKERRQ(ierr);
-  if (size != 1) SETERRQ(1,"This is a uniprocessor example only!");
+  if (size != 1) SETERRQ(PETSC_COMM_WORLD, 1,"This is a uniprocessor example only!");
   ierr = PetscOptionsGetInt(PETSC_NULL,"-n",&n,PETSC_NULL);CHKERRQ(ierr);
   h = 1.0/(n-1);
 
@@ -94,7 +94,7 @@ int main(int argc,char **argv)
      and preconditioner matrix.  Both of these are computed in the
      routine FormJacobian()
   */
-  ierr = SNESSetJacobian(snes,J,JPrec,FormJacobian,0);CHKERRQ(ierr);
+  ierr = SNESSetJacobian(snes,J,JPrec,FormJacobian,NULL);CHKERRQ(ierr);
 
   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
      Customize nonlinear solver; set runtime options
@@ -114,7 +114,7 @@ int main(int argc,char **argv)
 
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
   user.testint = 0;
-  ierr = SNESLineSearchSet(snes,FormLineSearch,(void **)&user);CHKERRQ(ierr);
+  ierr = SNESLineSearchSetType(snes,FormLineSearch,(void **)&user);CHKERRQ(ierr);
 
   /*
      Save all the linear residuals for all the Newton steps; this enables us
@@ -174,23 +174,26 @@ int main(int argc,char **argv)
      are no longer needed.
    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-  ierr = VecDestroy(x);CHKERRQ(ierr);     ierr = VecDestroy(r);CHKERRQ(ierr);
-  ierr = VecDestroy(F);CHKERRQ(ierr);     ierr = MatDestroy(J);CHKERRQ(ierr);
-  ierr = MatDestroy(JPrec);CHKERRQ(ierr); ierr = SNESDestroy(snes);CHKERRQ(ierr);
+  ierr = VecDestroy(&x);CHKERRQ(ierr);
+  ierr = VecDestroy(&r);CHKERRQ(ierr);
+  ierr = VecDestroy(&F);CHKERRQ(ierr);
+  ierr = MatDestroy(&J);CHKERRQ(ierr);
+  ierr = MatDestroy(&JPrec);CHKERRQ(ierr);
+  ierr = SNESDestroy(&snes);CHKERRQ(ierr);
   ierr = PetscFinalize();CHKERRQ(ierr);
 
   return 0;
 }
 
 PetscErrorCode FormLineSearch(SNES snes,void* user,Vec X,Vec F,Vec G,Vec Y,Vec W,PetscReal fnorm,
-                              PetscReal *ynorm,PetscReal *gnorm,PetscTruth *flag)
+                              PetscReal *ynorm,PetscReal *gnorm,PetscBool *flag)
 {
   PetscErrorCode ierr;
   PetscScalar mone=-1.0;
   AppCtx *myguy = (AppCtx*)user;
   *flag=PETSC_TRUE;
 
-  cout << "Inside FormLineSearch \n user.testint=" << myguy->testint << endl;
+  PetscPrintf(PETSC_COMM_SELF,"Inside FormLineSearch \n user.testint=%d\n", myguy->testint);
   ierr=VecNorm(Y,NORM_2,ynorm);
   ierr=VecWAXPY(W,mone,Y,X); /* W = -Y + X */
   ierr=SNESComputeFunction(snes,W,G);CHKERRQ(ierr);
